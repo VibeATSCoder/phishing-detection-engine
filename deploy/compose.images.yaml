@@ -1,0 +1,89 @@
+name: persianphish-integrated
+
+services:
+  review:
+    image: agentic-phishing-review:1.3.0-integrated
+    platform: linux/amd64
+    environment:
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY in .env}
+      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-google/gemma-4-31b-it}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
+      OPENROUTER_HTTP_REFERER: ${OPENROUTER_HTTP_REFERER:-}
+      OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-PersianPhish Integrated Review}
+      REVIEW_API_KEY: ${INTERNAL_REVIEW_API_KEY:?Set INTERNAL_REVIEW_API_KEY in .env}
+      REVIEW_DATABASE_PATH: /data/reviews.sqlite3
+      REVIEW_USE_BROWSER: "0"
+      REVIEW_WORKER_CONCURRENCY: ${REVIEW_WORKER_CONCURRENCY:-2}
+      REVIEW_RETENTION_DAYS: ${REVIEW_RETENTION_DAYS:-30}
+    ports:
+      - "127.0.0.1:${REVIEW_HOST_PORT:-8090}:8090"
+    volumes:
+      - review-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    pids_limit: 256
+    mem_limit: 1536m
+    cpus: 2.0
+    restart: unless-stopped
+    stop_grace_period: 20s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/ready', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 10s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  detector:
+    image: phishing-detection-engine:3.1.0-integrated
+    platform: linux/amd64
+    depends_on:
+      review:
+        condition: service_healthy
+    environment:
+      PPD_MODEL_PATH: /app/artifacts/v3/detector_v3_tcn.joblib
+      PPD_INTEL_DB: /app/var/intel.sqlite3
+      PPD_REVIEW_DB: /app/var/review.sqlite3
+      PPD_RESULT_DIR: /app/var/results
+      PPD_USE_BROWSER: "1"
+      PPD_ALLOW_PRIVATE_NETWORK: "0"
+      PPD_AGENT_BASE_URL: http://review:8090
+      PPD_AGENT_API_KEY: ${INTERNAL_REVIEW_API_KEY:?Set INTERNAL_REVIEW_API_KEY in .env}
+      PPD_AGENT_TIMEOUT_S: ${PPD_AGENT_TIMEOUT_S:-75}
+      PPD_AGENT_POLL_INTERVAL_S: ${PPD_AGENT_POLL_INTERVAL_S:-0.25}
+      PPD_API_KEY: ${PPD_API_KEY:-}
+    ports:
+      - "127.0.0.1:${PPD_HOST_PORT:-8088}:8088"
+    volumes:
+      - detector-data:/app/var
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m,mode=1777
+    shm_size: "1gb"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    init: true
+    pids_limit: 512
+    mem_limit: 3g
+    cpus: 2.0
+    restart: unless-stopped
+    stop_grace_period: 30s
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8088/ready', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 30s
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+volumes:
+  detector-data:
+  review-data:

@@ -1,0 +1,4 @@
+-r requirements-tcn.txt
+jupyterlab>=4,<5
+matplotlib>=3.7,<4
+seaborn>=0.13,<1

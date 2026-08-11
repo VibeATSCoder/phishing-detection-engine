@@ -1,0 +1,21 @@
+{
+  "passed": true,
+  "rows": 14941,
+  "eligible_rows": 14182,
+  "missing_columns": [],
+  "group_cross_split": 0,
+  "duplicate_sample_ids": 0,
+  "duplicate_canonical_urls": 0,
+  "absolute_html_paths": 0,
+  "weak_rows_in_training": 0,
+  "trusted_contract": true,
+  "model_version": "v3-realworld-tcn-20260726",
+  "policy_production_ready": false,
+  "tcn_input_contract": "normalized_hostname_only_v1",
+  "tcn_input_contract_matches": true,
+  "tcn_path": "artifacts\\v3\\url_tcn.onnx",
+  "tcn_probes": {
+    "known_legitimate": 0.22603890850840047,
+    "obvious_lookalike": 0.9999999973503604
+  }
+}

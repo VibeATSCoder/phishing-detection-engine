@@ -1,0 +1,474 @@
+{
+  "release": "phishing-detection-engine-v3.1.0",
+  "version": "3.1.0",
+  "created_at_utc": "2026-08-11T07:52:11.682505+00:00",
+  "python": "3.12.13",
+  "file_count": 93,
+  "files": [
+    {
+      "path": ".dockerignore",
+      "bytes": 148,
+      "sha256": "c8f36be9b47de61575401146777ed759d845ce7df7c565a2b0b7556bc24b8f6d"
+    },
+    {
+      "path": ".env.example",
+      "bytes": 674,
+      "sha256": "536135752647167aa7a95a53914c44722ce4069d7c6a866a7433b0ece484b2df"
+    },
+    {
+      "path": ".gitattributes",
+      "bytes": 207,
+      "sha256": "ac4a4153dd595e910f37ff39f11d9e14310ffe05e194f52882ca2a59f3618269"
+    },
+    {
+      "path": ".gitignore",
+      "bytes": 175,
+      "sha256": "2c11d5e23a0860f476f0fcfd4d3c80ab99859cf684c06e32332d6283027e358a"
+    },
+    {
+      "path": "AGENTS.md",
+      "bytes": 1536,
+      "sha256": "194d5144a9a673af0f33083a76d7c934774b1af9ff395ac172e65f182ce07749"
+    },
+    {
+      "path": "Dockerfile",
+      "bytes": 1144,
+      "sha256": "2f54247edfb7601b40327dc575a26ed3c6fdf2342767e13625721448b8867c23"
+    },
+    {
+      "path": "README.md",
+      "bytes": 7314,
+      "sha256": "4e87fba0125aa9580e7e594b693c611b302874c23e975497640b6c7e064bafb3"
+    },
+    {
+      "path": "artifacts/v3/detector_v3.joblib",
+      "bytes": 5078802,
+      "sha256": "f791cbc1420eae2c1dfc2441c7729d07139a70c836c1b66995bca547da9ff979"
+    },
+    {
+      "path": "artifacts/v3/detector_v3_feature_importance.csv",
+      "bytes": 3063,
+      "sha256": "404d8063ef48130f1565f0ba44d8c7c7712457f707a5689afef8d08080797912"
+    },
+    {
+      "path": "artifacts/v3/detector_v3_metrics.json",
+      "bytes": 20055,
+      "sha256": "579af7a9cb4eecb5b8f9d73b1a458c2ac5fdef50460633c0e6b5517ca29c0fef"
+    },
+    {
+      "path": "artifacts/v3/detector_v3_tcn.joblib",
+      "bytes": 5393620,
+      "sha256": "f626bc7966666e800188c73e04a5c3a3c24a4f2ca716ff236ad12a660b635302"
+    },
+    {
+      "path": "artifacts/v3/detector_v3_test_predictions.csv",
+      "bytes": 322007,
+      "sha256": "e2ff36b3efdf006d6c1320a3511589d9b1d6b0292ff08b38e2117db801a2606a"
+    },
+    {
+      "path": "artifacts/v3/detector_v3_weak_stress_predictions.csv",
+      "bytes": 115923,
+      "sha256": "21b0351130f2d174eddbffe23243f8a4aa5375c958828bd822b8ffe542e72a20"
+    },
+    {
+      "path": "artifacts/v3/release_validation.json",
+      "bytes": 616,
+      "sha256": "8e48633f8d4a7610454010dd83109ee95a96a57be85e9661c2182e4edbd7963b"
+    },
+    {
+      "path": "artifacts/v3/url_tcn.onnx",
+      "bytes": 1076876,
+      "sha256": "ae5c02c3aeba7565579e2078995959233107e5cb7b6316a93cbf93894fc82c8b"
+    },
+    {
+      "path": "artifacts/v3/url_tcn.pt",
+      "bytes": 1103699,
+      "sha256": "c2de6ab525a6ea525e64767ab56db6aeba439692d9c8abf75a1a3d1c4feee7fb"
+    },
+    {
+      "path": "artifacts/v3/url_tcn_metrics.json",
+      "bytes": 12393,
+      "sha256": "da9d21e4d9bd522b5ed58c40facaa31d17db9b604e75e62b12672b2b8361973a"
+    },
+    {
+      "path": "artifacts/v3/url_tcn_test_predictions.csv",
+      "bytes": 340915,
+      "sha256": "21f722366951eec9df3a4e9d21f9cbc9cb1ab16661d1ac143594c4789ecec03f"
+    },
+    {
+      "path": "data/processed/realworld_v3_features.csv",
+      "bytes": 14383953,
+      "sha256": "66e69169e24267bc87aec6e3171422ce0ce1a792859d2b7481178b496d48eb2e"
+    },
+    {
+      "path": "data/processed/realworld_v3_features_summary.json",
+      "bytes": 688,
+      "sha256": "2928e57afe5193d05aeecca9eee957ad80bcce160098ee40d11119fb5f3ddd53"
+    },
+    {
+      "path": "data/processed/realworld_v3_quality_issues.csv",
+      "bytes": 282486,
+      "sha256": "6a4705aa12693b0aa7b6e15d66ceb94f2302eaa8f712814e9bc4049fbbfa968b"
+    },
+    {
+      "path": "deploy/COMPATIBILITY.json",
+      "bytes": 730,
+      "sha256": "2cbfd84f847e87f37bbc205ec6797b24b38b1587501931f9265468159c77aa22"
+    },
+    {
+      "path": "deploy/IMAGE_BUNDLE.md",
+      "bytes": 1310,
+      "sha256": "cf170c7fba5a3cf88f69ead5b49ebcf4954d9363dac64f486da1dd8fc54e6f8a"
+    },
+    {
+      "path": "deploy/INTEGRATED.md",
+      "bytes": 4283,
+      "sha256": "0ae918c8cd2ee2f11c5010436ffcd706f04f512d2f886602eecb2de5dbf1ab0b"
+    },
+    {
+      "path": "deploy/compose.images.yaml",
+      "bytes": 2908,
+      "sha256": "8357b02855123113e9f1f391fab475228e0d171a4a9fe4c832e1c676e25bacf6"
+    },
+    {
+      "path": "deploy/compose.test.yaml",
+      "bytes": 997,
+      "sha256": "69396691a83f2714b5637da3a4ec918c9139c23d3a027a3b21cd04224e0142bc"
+    },
+    {
+      "path": "deploy/compose.yaml",
+      "bytes": 3210,
+      "sha256": "acc8887a18687fd7f2dfcf8c29dfbad92c81efd5f7ad4341736485b80ecd0819"
+    },
+    {
+      "path": "docs/ACCEPTANCE.md",
+      "bytes": 3002,
+      "sha256": "0599d088912c3d7adf251032abaafba2e16924ee359ed3fdca8c69614cb54e49"
+    },
+    {
+      "path": "docs/ARCHITECTURE.md",
+      "bytes": 4919,
+      "sha256": "b2028e6d61b906e427ed741d7197b91cccde948089a87aeac8d812a64f9645a0"
+    },
+    {
+      "path": "docs/DATA_CARD.md",
+      "bytes": 3148,
+      "sha256": "9f7a2b39d72401c44af1517254d95197700f0696f3da4e9768a5147f1607fcba"
+    },
+    {
+      "path": "docs/EXTENSION_INTEGRATION.md",
+      "bytes": 1724,
+      "sha256": "0dd93b2022d1b4a2b02bb4d50b9bb86867c5cd1ef8adb9408318cf02f80bb133"
+    },
+    {
+      "path": "docs/MODEL_CARD.md",
+      "bytes": 3356,
+      "sha256": "00e111642a440ff2ce7c0378b433a347fae2f704799acc524e50cf5149296fd0"
+    },
+    {
+      "path": "docs/OPERATIONS.md",
+      "bytes": 3512,
+      "sha256": "a9aa1196c9bdc5f02ea39df1fc4833ef1f18d0df06900baf688b76b46640cdcc"
+    },
+    {
+      "path": "docs/REAL_WORLD_FINDINGS.md",
+      "bytes": 3027,
+      "sha256": "fab4b6f15f6230c2d53679cb46e201174553135ff1402a885488403b59ff2022"
+    },
+    {
+      "path": "notebooks/.ipynb_checkpoints/01_data_audit_and_train_rf-checkpoint.ipynb",
+      "bytes": 18434,
+      "sha256": "71aca02a0def5b09f504c6fb9592bea533fa60dfc284f1dbf58f49328020fa2e"
+    },
+    {
+      "path": "notebooks/01_data_audit_and_train_rf.ipynb",
+      "bytes": 18434,
+      "sha256": "71aca02a0def5b09f504c6fb9592bea533fa60dfc284f1dbf58f49328020fa2e"
+    },
+    {
+      "path": "notebooks/02_train_tcn_and_ensemble.ipynb",
+      "bytes": 2206,
+      "sha256": "5558f290710b28f9f7bd319997ba6e5ab44619ed95fd92a557bddf75c784a1fc"
+    },
+    {
+      "path": "notebooks/03_evaluate_and_error_analysis.ipynb",
+      "bytes": 3276,
+      "sha256": "a82a7f742e06e20be7ccaf4e48de0ebb2dd0ede6c49cc3afb83593e7e5ea70ca"
+    },
+    {
+      "path": "notebooks/04_live_detection.ipynb",
+      "bytes": 2013,
+      "sha256": "25b6ed1716781b824d09cdd12de34a70d99485a3e65a332e7963d1a49766de98"
+    },
+    {
+      "path": "pyproject.toml",
+      "bytes": 1121,
+      "sha256": "81ca9be402ddbbfb6963ecce3750d6c00a586d99a5ebbc593738185c04266c17"
+    },
+    {
+      "path": "requirements-browser.txt",
+      "bytes": 40,
+      "sha256": "973b5bdd651c2712f05466d7f3c673c913c2de7ce08e473291a529de0d6dfe8f"
+    },
+    {
+      "path": "requirements-notebook.txt",
+      "bytes": 77,
+      "sha256": "502ba12c67cd5b791dab6da484b0637e9dbbec04a7408e57171eb8ed3065c54b"
+    },
+    {
+      "path": "requirements-tcn.txt",
+      "bytes": 97,
+      "sha256": "8f67c4cf230b143443885bf883691266c2a6d6e2f9e2d31673b13b81d8a2d2ef"
+    },
+    {
+      "path": "requirements.txt",
+      "bytes": 211,
+      "sha256": "59dbef20d437269fba047d28369926e6394baab94fb786ad07fc9863d01535a6"
+    },
+    {
+      "path": "scripts/benchmark_api.py",
+      "bytes": 2271,
+      "sha256": "06dfacf567684d327df77823c91c57f25b73c761c0718948051b2ee5c8317ed6"
+    },
+    {
+      "path": "scripts/build_release.py",
+      "bytes": 4090,
+      "sha256": "4f68abadef21d27279cbac9ee5ece2addb14359b2b9acc2a7875dcd6b968de04"
+    },
+    {
+      "path": "scripts/check_agent.py",
+      "bytes": 3234,
+      "sha256": "d417ab0a3c96533ce454a3015b1bfc59d6d6fb1939bba217d59a6da8a1d79746"
+    },
+    {
+      "path": "scripts/smoke_integrated.py",
+      "bytes": 4419,
+      "sha256": "5ad52c03c70ecd92a6feea57c5f7da89ff67115ea855365f6dc90fc7278604e2"
+    },
+    {
+      "path": "scripts/validate_release.py",
+      "bytes": 3731,
+      "sha256": "80df402c2fc1fe895741eb1ef883fe7b7981b178d68ee9a8653ddab3b1c75f04"
+    },
+    {
+      "path": "src/persianphish_detector/__init__.py",
+      "bytes": 212,
+      "sha256": "2dedd8ff2c92f545f3f0bd9de8c2328eae192398e6b12ca2a2aff2f76254ecab"
+    },
+    {
+      "path": "src/persianphish_detector/__main__.py",
+      "bytes": 48,
+      "sha256": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d"
+    },
+    {
+      "path": "src/persianphish_detector/agent.py",
+      "bytes": 15809,
+      "sha256": "4bb02898f71f1019043deb39f779f403fd2574288c531a8d532d08e0d6d78768"
+    },
+    {
+      "path": "src/persianphish_detector/api.py",
+      "bytes": 8110,
+      "sha256": "30cb0a76fc10a41b5801d8db9022984d4c90e9b466124048b13fe3f29def6c25"
+    },
+    {
+      "path": "src/persianphish_detector/body_limit.py",
+      "bytes": 1937,
+      "sha256": "188b6af594018a92865b0f888ac5399572de2f80da0b269a016aa83b2e90a51f"
+    },
+    {
+      "path": "src/persianphish_detector/cli.py",
+      "bytes": 5775,
+      "sha256": "5ff2da1f0e64216b55dde09d9cc65f524b7963f3960da47bd418f735f6dc26db"
+    },
+    {
+      "path": "src/persianphish_detector/config.py",
+      "bytes": 2955,
+      "sha256": "a05c755afa4393db51500927d3d40f8e1d9c8f1bf69117a28ce72e819998b92e"
+    },
+    {
+      "path": "src/persianphish_detector/crawl/__init__.py",
+      "bytes": 244,
+      "sha256": "799e3dfcadf46b3a09fcf965ee807ffad23975a97f9e40e32f4db41077dc7acb"
+    },
+    {
+      "path": "src/persianphish_detector/crawl/browser.py",
+      "bytes": 6785,
+      "sha256": "4d0426ad47eec23ba63279023564babd484e4b170ed0e29c0f18eb35108e7f1b"
+    },
+    {
+      "path": "src/persianphish_detector/crawl/evidence.py",
+      "bytes": 2067,
+      "sha256": "13946bcac1deadcae7badf673604d30abb826d5055724c3001963d75a3b16ca0"
+    },
+    {
+      "path": "src/persianphish_detector/crawl/http.py",
+      "bytes": 7547,
+      "sha256": "845d51c084daa26f719c65d21632768402d4862361cc7c3075d4a7260676e59c"
+    },
+    {
+      "path": "src/persianphish_detector/crawl/quality.py",
+      "bytes": 3134,
+      "sha256": "ef92e0c738b2a94d3603c13f776f7ea60a28a0bbeead02dd5cdc444139384109"
+    },
+    {
+      "path": "src/persianphish_detector/dataset.py",
+      "bytes": 21790,
+      "sha256": "10767ddce7634fd80070d59d4d501bc5ac64825b8905eba99ff37ac1922c5c31"
+    },
+    {
+      "path": "src/persianphish_detector/domain_facts.py",
+      "bytes": 1815,
+      "sha256": "68e3ff370f947156a3054065303ef28872fb084773eb607ba6a06b06621e6a3b"
+    },
+    {
+      "path": "src/persianphish_detector/features/__init__.py",
+      "bytes": 135,
+      "sha256": "c8ef0713013858d561118e3768890bced2ceaacb02dba308aca88a715c58980a"
+    },
+    {
+      "path": "src/persianphish_detector/features/v2.py",
+      "bytes": 19873,
+      "sha256": "e11e5429ec270fb503add8f1ccc9dae98facbf2d8a8ffc17a5e12c39ea9c91c7"
+    },
+    {
+      "path": "src/persianphish_detector/intel.py",
+      "bytes": 9298,
+      "sha256": "b66d868abd0db71439ca5049cbca59f2f776a72f95cf9db6381350b8ce3e65cd"
+    },
+    {
+      "path": "src/persianphish_detector/models/__init__.py",
+      "bytes": 196,
+      "sha256": "ebceb83a542c25581f352082457dd7bd2321346f7bf442f8fbcb95154da09e63"
+    },
+    {
+      "path": "src/persianphish_detector/models/artifact.py",
+      "bytes": 4134,
+      "sha256": "527c4e92f1e9eda1c3736815f4501a995ac5706727c7a483dc9b7ee62bed31b1"
+    },
+    {
+      "path": "src/persianphish_detector/models/policy.py",
+      "bytes": 4033,
+      "sha256": "ce7e823d7d8ffef8c57b7cdc9d0d9113e69025bc9003e9c223487edd74e302e6"
+    },
+    {
+      "path": "src/persianphish_detector/models/tcn.py",
+      "bytes": 4332,
+      "sha256": "0f694ba44da3b24f7963cd672dcd05aecf74a5244cd7dbc58eb9b1e71af2eede"
+    },
+    {
+      "path": "src/persianphish_detector/models/train_rf.py",
+      "bytes": 13809,
+      "sha256": "006139a352ed6e7421e71c8eda02449c068153b986bd05d4309a0722fa17ca1a"
+    },
+    {
+      "path": "src/persianphish_detector/models/train_tcn.py",
+      "bytes": 18729,
+      "sha256": "8685dd6bbf054e7f7f1881ac68f8567a268a4bdde116d6c47bcbd40432817f27"
+    },
+    {
+      "path": "src/persianphish_detector/orchestrator.py",
+      "bytes": 17707,
+      "sha256": "77d0ee6417a2d1e9caee014c518c3b34955fadd35a374c161a6fb3c4923a36c0"
+    },
+    {
+      "path": "src/persianphish_detector/review.py",
+      "bytes": 4396,
+      "sha256": "5b388f971e96f0bb4cc68eebce1bd6c602c65b844f4970b6b55ad96b0a83234b"
+    },
+    {
+      "path": "src/persianphish_detector/types.py",
+      "bytes": 2537,
+      "sha256": "071ca2bfca98f5102a6356d97ea727d2e24d940ab655f85c612010de64b8306d"
+    },
+    {
+      "path": "src/persianphish_detector/url_utils.py",
+      "bytes": 6344,
+      "sha256": "238769db4716cd2509e02dfa8b2666fd6f6c802f76fb5be089c879567ccd7ad4"
+    },
+    {
+      "path": "src/persianphish_realworld_detector.egg-info/PKG-INFO",
+      "bytes": 1227,
+      "sha256": "7815459e8fd67b10f9f3b1694efac319646e294026b2c9100478bfceba88c694"
+    },
+    {
+      "path": "src/persianphish_realworld_detector.egg-info/SOURCES.txt",
+      "bytes": 1651,
+      "sha256": "81dd359b76e86019e27e9b4cc3a9cb86a3788d08078418f27200c1c9a4e4a30c"
+    },
+    {
+      "path": "src/persianphish_realworld_detector.egg-info/dependency_links.txt",
+      "bytes": 1,
+      "sha256": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b"
+    },
+    {
+      "path": "src/persianphish_realworld_detector.egg-info/entry_points.txt",
+      "bytes": 71,
+      "sha256": "81490526cfacc32322d0554eeab995ee4c183e272382a3b5b35904886ad932a2"
+    },
+    {
+      "path": "src/persianphish_realworld_detector.egg-info/requires.txt",
+      "bytes": 436,
+      "sha256": "4cb7b68e841af7df0c8ab2f957ac026b5d62c92d9627dedf74b4fc82760a25f1"
+    },
+    {
+      "path": "src/persianphish_realworld_detector.egg-info/top_level.txt",
+      "bytes": 22,
+      "sha256": "246a4f1a634cef4429062376c81e1d32e7dd33b82b89f52c2589696481b2dc5c"
+    },
+    {
+      "path": "tests/test_agent_orchestrator.py",
+      "bytes": 13330,
+      "sha256": "f89954305e56363df668be774482f02fdba49862b99e27a65adbe7cf80a28143"
+    },
+    {
+      "path": "tests/test_api.py",
+      "bytes": 1128,
+      "sha256": "0d680ef328b9ef1a8234c67b92ecd9f7974abd57f2e499cf684e3e9dc842c910"
+    },
+    {
+      "path": "tests/test_browser_evidence.py",
+      "bytes": 4673,
+      "sha256": "e878eb620c498d463175282be25821a129321ff370760da9ac20b0d9aff63493"
+    },
+    {
+      "path": "tests/test_domain_facts.py",
+      "bytes": 771,
+      "sha256": "97ce5261833da9b5739947b206d2ff58588f635254cb14e7675de4d06146c902"
+    },
+    {
+      "path": "tests/test_features.py",
+      "bytes": 1662,
+      "sha256": "4ee9a204c9cb0bd2228a59267ae0f916e39a4cf60c5fc97facc38f6a87b79f4c"
+    },
+    {
+      "path": "tests/test_intel_review.py",
+      "bytes": 1933,
+      "sha256": "d3e828850002c1caebdc98c4aa3d4842370ee23e830b4f9c0a110c9eeff541e7"
+    },
+    {
+      "path": "tests/test_policy.py",
+      "bytes": 1475,
+      "sha256": "3aca1242b19f666b1e0f59dd5d7dd0f743a7a44d7997ef46c6e91f192f69981f"
+    },
+    {
+      "path": "tests/test_quality.py",
+      "bytes": 1266,
+      "sha256": "6fd2f30e50b82d38c4cc7a8afe580f5a8f256e987c0499156cbbf497baf4e518"
+    },
+    {
+      "path": "tests/test_release_contract.py",
+      "bytes": 1378,
+      "sha256": "2ebc36a98a09a594e45e50045ba0d361d152411d725336274f60c900a074993e"
+    },
+    {
+      "path": "tests/test_tcn.py",
+      "bytes": 620,
+      "sha256": "54a7270c314f96f82835c12858896c7a484aa5488bb1a1bf23a9b47e5ad9d591"
+    },
+    {
+      "path": "tests/test_url_utils.py",
+      "bytes": 1241,
+      "sha256": "3fb49c533ce6314e5c3d19799a6314bd9ab1d00a6b3ccb2154724e9ad8875dbe"
+    }
+  ]
+}

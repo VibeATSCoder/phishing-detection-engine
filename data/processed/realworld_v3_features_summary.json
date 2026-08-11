@@ -1,0 +1,43 @@
+{
+  "processed": 15865,
+  "accepted": 14941,
+  "issues": 924,
+  "labels": {
+    "1": 7507,
+    "0": 7434
+  },
+  "origins": {
+    "real": 8193,
+    "synthetic": 6748
+  },
+  "label_quality": {
+    "verified_legitimate": 7434,
+    "generated_phishing": 6748,
+    "weak_feed": 759
+  },
+  "training_eligible": 14182,
+  "splits": {
+    "calibration": {
+      "0": 756,
+      "1": 678
+    },
+    "policy": {
+      "0": 844,
+      "1": 777
+    },
+    "test": {
+      "0": 935,
+      "1": 845
+    },
+    "train": {
+      "0": 4899,
+      "1": 4448
+    },
+    "weak_stress": {
+      "0": 0,
+      "1": 759
+    }
+  },
+  "feature_count": 85,
+  "workers": 6
+}

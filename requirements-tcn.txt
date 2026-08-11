@@ -1,0 +1,5 @@
+-r requirements.txt
+torch>=2.3,<2.4
+onnx>=1.16,<1.17
+onnxruntime>=1.18,<1.19
+ml-dtypes>=0.3,<0.4

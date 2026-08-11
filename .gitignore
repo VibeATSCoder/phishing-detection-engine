@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.egg-info/
+src/*.egg-info/
+var/
+data/processed/smoke_*
+release/
+notebooks/.ipynb_checkpoints/
+artifacts/notebook/
+.env
+.DS_Store
