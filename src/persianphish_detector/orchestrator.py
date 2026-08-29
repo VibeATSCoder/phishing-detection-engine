@@ -13,6 +13,7 @@ from .config import DetectorConfig
 from .crawl import BrowserCrawler, HttpCrawler, from_browser_payload
 from .domain_facts import collect_domain_facts
 from .features import extract_features
+from .evidence_codes import derive_evidence
 from .intel import IntelMatch, IntelStore
 from .observability import METRICS, record_detection, span, url_labels
 from .models import DetectorArtifact, load_artifact
@@ -115,6 +116,7 @@ class Detector:
                 request_id, normalized, normalized, Verdict.PHISHING, 1.0, "reputation",
                 CrawlStatus.PARTIAL, ["exact_local_phishing_feed_match", f"intel_{intel_match.source}"],
                 {"rf": None, "tcn": None}, started, {"intel": asdict(intel_match)},
+                evidence_items=derive_evidence(intel_match=intel_match),
             )
 
         if browser_evidence:
@@ -153,6 +155,7 @@ class Detector:
                 evidence.status, ["crawl_not_usable", *evidence.quality_reasons],
                 {"rf": None, "tcn": self._predict_tcn(normalized)}, started,
                 evidence.public_dict(), extra_latency={"crawl": crawl_ms},
+                evidence_items=derive_evidence(crawl_status=evidence.status.value),
             )
             self._enqueue(result)
             self._persist(result)
@@ -221,6 +224,7 @@ class Detector:
 
         agent_invoked = False
         agent_audit: dict[str, Any] | None = None
+        agent_evidence_codes: list[str] = []
         if verdict == Verdict.SUSPICIOUS and self.agent:
             agent_invoked = True
             agent_started = time.perf_counter()
@@ -240,6 +244,7 @@ class Detector:
                 verdict, agent_reasons = self._reconcile_agent(agent_review, features, combined, evidence)
                 reasons.extend(agent_reasons)
                 agent_audit = {"status": "completed", **agent_review.audit_summary()}
+                agent_evidence_codes = list(agent_review.evidence_codes)
                 METRICS.agent_calls.labels(outcome="completed").inc()
                 METRICS.agent_reconciliation.labels(
                     agent_verdict=str(agent_review.verdict_candidate),
@@ -274,6 +279,12 @@ class Detector:
             "agent" if agent_invoked else ("browser" if evidence.source.startswith("browser") else "fast"),
             evidence.status, reasons, scores, started, evidence_summary,
             extra_latency={"crawl": crawl_ms, "domain_facts": facts_ms, "agent": agent_ms},
+            evidence_items=derive_evidence(
+                features,
+                intel_match=intel_match,
+                crawl_status=evidence.status.value,
+                agent_codes=agent_evidence_codes,
+            ),
         )
         if result.verdict in {Verdict.SUSPICIOUS, Verdict.CRAWL_FAILED}:
             self._enqueue(result)
@@ -390,6 +401,7 @@ class Detector:
         started: float,
         evidence: Mapping[str, Any],
         extra_latency: Mapping[str, float] | None = None,
+        evidence_items: list[dict[str, str]] | None = None,
     ) -> DetectionResult:
         latency = dict(extra_latency or {})
         latency["total"] = (time.perf_counter() - started) * 1000
@@ -405,6 +417,7 @@ class Detector:
             model_scores={key: None if value is None else round(float(value), 6) for key, value in scores.items()},
             model_version=self.artifact.model_version if self.artifact else "v2-no-artifact",
             latency_ms={key: round(float(value), 3) for key, value in latency.items()},
+            evidence=list(evidence_items or []),
             evidence_summary=dict(evidence),
         )
         record_detection(result)

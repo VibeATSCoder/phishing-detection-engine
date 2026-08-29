@@ -78,6 +78,7 @@ class DetectionResult:
     model_scores: Dict[str, Optional[float]] = field(default_factory=dict)
     model_version: str = "v3"
     latency_ms: Dict[str, float] = field(default_factory=dict)
+    evidence: List[Dict[str, str]] = field(default_factory=list)
     evidence_summary: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
