@@ -1,0 +1,170 @@
+# Alert rules for the PersianPhish stack.
+#
+# These are written against the system's own invariants rather than generic
+# service health. The recurring theme is that this stack is designed to abstain
+# under uncertainty, so the signals that matter most are the ones that show it
+# has *stopped* abstaining correctly: a collapse in crawl quality, an agent that
+# has gone dark, a review queue nobody is draining, or a model whose score
+# distribution has moved away from where it was calibrated.
+
+groups:
+  - name: availability
+    rules:
+      - alert: ServiceDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.job }} is not responding to scrapes"
+          description: "Prometheus has failed to scrape {{ $labels.job }} ({{ $labels.instance }}) for 2 minutes."
+
+      - alert: MonitorCannotReadDatabase
+        expr: pim_up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Monitor cannot read its own SQLite store"
+          description: "The monitor is serving metrics but failing to query candidates. Discovery may be silently stalled."
+
+  - name: detection_quality
+    rules:
+      # A crawl_failed spike usually means the crawler is being blocked, not
+      # that the web changed. The verdict is correct-by-design, but a sustained
+      # rate means the detector is answering "I could not look" to most traffic.
+      - alert: CrawlFailureRateHigh
+        expr: |
+          sum(rate(ppd_detections_total{verdict="crawl_failed"}[10m]))
+            / clamp_min(sum(rate(ppd_detections_total[10m])), 0.001) > 0.25
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Over 25% of detections are returning crawl_failed"
+          description: "Sustained crawl failure suggests blocking, egress problems, or a broken Chromium pool rather than a change in traffic."
+
+      # Escalation pressure. Every suspicious verdict is a candidate LLM call
+      # and a row in the review queue, so this drives both cost and backlog.
+      - alert: SuspiciousRateHigh
+        expr: |
+          sum(rate(ppd_detections_total{verdict="suspicious"}[15m]))
+            / clamp_min(sum(rate(ppd_detections_total[15m])), 0.001) > 0.40
+        for: 20m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Over 40% of detections are abstaining as suspicious"
+          description: "Check the OOD fraction and model score distribution: the input mix may have drifted away from the calibration set."
+
+      # The policy gate reports how far inputs sit from the training
+      # distribution. A rising mean is the earliest warning of drift.
+      - alert: OutOfDistributionRising
+        expr: |
+          histogram_quantile(0.5, sum(rate(ppd_ood_fraction_bucket[30m])) by (le)) > 0.5
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Median out-of-distribution fraction above 0.5"
+          description: "Half of traffic now looks unlike the training distribution. Model verdicts should be treated with reduced confidence until investigated."
+
+  - name: agentic_review
+    rules:
+      - alert: AgentEscalationsFailing
+        expr: |
+          sum(rate(ppd_agent_calls_total{outcome!="completed"}[10m]))
+            / clamp_min(sum(rate(ppd_agent_calls_total[10m])), 0.001) > 0.20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Over 20% of agent escalations are failing"
+          description: "Failures resolve to suspicious by design, so detection stays safe, but the queue will grow and the reviewer is not contributing."
+
+      - alert: AgentLatencyHigh
+        expr: histogram_quantile(0.95, sum(rate(ppd_agent_duration_seconds_bucket[10m])) by (le)) > 90
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Agent p95 latency above 90s"
+          description: "The detector blocks on the reviewer. Check OpenRouter latency and the reviewer's own node timings."
+
+      # The verifier exists to catch an over-eager analyst. If it never
+      # disagrees, the second pass has stopped adding value; if it always
+      # disagrees, one of the prompts has drifted.
+      - alert: VerifierNeverDisagrees
+        expr: |
+          sum(rate(apr_agreement_total{analyst!="none",verifier!="none"}[6h])) > 0
+          and
+          sum(rate(apr_agreement_total{analyst!="none",verifier!="none"}[6h]))
+            == sum(rate(apr_agreement_total{analyst="phishing",verifier="phishing"}[6h]))
+              + sum(rate(apr_agreement_total{analyst="legitimate",verifier="legitimate"}[6h]))
+              + sum(rate(apr_agreement_total{analyst="suspicious",verifier="suspicious"}[6h]))
+        for: 6h
+        labels:
+          severity: info
+        annotations:
+          summary: "Verifier has agreed with the analyst on every review for 6h"
+          description: "The skeptical second pass may have stopped functioning as an independent check."
+
+      - alert: LLMErrorRateHigh
+        expr: |
+          sum(rate(apr_llm_calls_total{outcome!="ok"}[10m]))
+            / clamp_min(sum(rate(apr_llm_calls_total[10m])), 0.001) > 0.15
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Over 15% of OpenRouter calls are failing"
+          description: "Provider failure resolves to suspicious by design. Check credentials, model availability, and the structured-output schema."
+
+  - name: backlog
+    rules:
+      # Nothing drains this queue automatically. It is meant to be worked by a
+      # human, so unbounded growth is an operational signal, not a bug.
+      - alert: ReviewQueueGrowing
+        expr: ppd_review_queue_depth > 500 and deriv(ppd_review_queue_depth[1h]) > 0
+        for: 2h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Detector review queue above 500 and still growing"
+          description: "Unresolved suspicious cases are accumulating faster than they are being adjudicated."
+
+      - alert: MonitorAdjudicationFallingBehind
+        expr: pim_oldest_due_candidate_age_seconds > 172800
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "A candidate has been due for adjudication for over 48h"
+          description: "Discovery is outpacing VirusTotal checks. Verify the daily budget and the worker loop."
+
+      - alert: VirusTotalBudgetNearlyExhausted
+        expr: pim_vt_requests_today > 450
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "VirusTotal daily request budget nearly consumed"
+          description: "Further candidates will defer to tomorrow. Adjust the threshold to match your actual plan limit."
+
+      - alert: CertStreamReconnectStorm
+        expr: sum(rate(pim_certstream_reconnects_total[15m])) * 900 > 10
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CertStream reconnecting more than 10 times per 15 minutes"
+          description: "Discovery is intermittent. Check the aggregator sidecar and the upstream CT feed."
+
+      - alert: DiscoveryStalled
+        expr: sum(rate(pim_certstream_messages_total[30m])) == 0
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No CertStream messages for 30 minutes"
+          description: "The monitor is up but receiving nothing. New phishing infrastructure is not being discovered."

@@ -14,6 +14,11 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from . import __version__
 from .body_limit import RequestBodyLimitMiddleware
 from .config import DetectorConfig
+from .observability import (
+    configure_tracing,
+    instrument_app,
+    set_build_info,
+)
 from .orchestrator import Detector
 from .url_utils import canonical_url
 
@@ -100,9 +105,18 @@ class ReviewResolution(BaseModel):
 def create_app(config: DetectorConfig | None = None) -> FastAPI:
     selected_config = config or DetectorConfig.from_env()
 
+    configure_tracing(service_version=__version__)
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
-        app.state.detector = Detector(selected_config)
+        detector = Detector(selected_config)
+        app.state.detector = detector
+        artifact = detector.artifact
+        set_build_info(
+            __version__,
+            artifact.model_version if artifact else "no-artifact",
+            artifact.policy.production_ready if artifact else False,
+        )
         yield
         await app.state.detector.close()
 
@@ -113,10 +127,11 @@ def create_app(config: DetectorConfig | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.add_middleware(RequestBodyLimitMiddleware, max_bytes=MAX_REQUEST_BODY_BYTES)
+    instrument_app(app)
 
     @app.middleware("http")
     async def optional_api_key(request: Request, call_next):
-        if selected_config.api_key and request.url.path not in {"/health", "/ready"}:
+        if selected_config.api_key and request.url.path not in {"/health", "/ready", "/metrics"}:
             supplied = request.headers.get("x-api-key", "")
             if not hmac.compare_digest(supplied, selected_config.api_key):
                 from fastapi.responses import JSONResponse

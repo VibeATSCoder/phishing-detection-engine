@@ -1,0 +1,48 @@
+# Scrape configuration for the PersianPhish stack.
+#
+# All three services expose a /metrics endpoint carrying bounded enumerations
+# only: verdicts, stages, outcomes, and reason categories. No URL, hostname, or
+# case identifier appears in any label, so this store never becomes a record of
+# what was browsed. Per-case correlation lives in traces, keyed by the shared
+# URL digest.
+#
+# Host names below assume the services share a Docker network. When running one
+# of them outside compose, replace the target with host.docker.internal:PORT.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    stack: persianphish
+
+rule_files:
+  - /etc/prometheus/alerts.yml
+
+scrape_configs:
+  - job_name: detector
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["detector:8088"]
+        labels:
+          service: phishing-detection-engine
+
+  - job_name: reviewer
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["reviewer:8090"]
+        labels:
+          service: agentic-phishing-review
+
+  # The monitor's exposition is served by its moderator panel, which defaults to
+  # 8090 — the same port the reviewer uses. Run them on separate hosts, or set
+  # PANEL_PORT on the monitor, and update this target to match.
+  - job_name: monitor
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["monitor:8091"]
+        labels:
+          service: phishing-intelligence-monitor
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

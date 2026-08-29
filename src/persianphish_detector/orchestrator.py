@@ -14,6 +14,7 @@ from .crawl import BrowserCrawler, HttpCrawler, from_browser_payload
 from .domain_facts import collect_domain_facts
 from .features import extract_features
 from .intel import IntelMatch, IntelStore
+from .observability import METRICS, record_detection, span, url_labels
 from .models import DetectorArtifact, load_artifact
 from .models.tcn import ONNXTCNPredictor, TCN_INPUT_CONTRACT
 from .review import ReviewStore
@@ -75,12 +76,22 @@ class Detector:
         browser_evidence: Mapping[str, Any] | None = None,
         agent_references: Sequence[Mapping[str, Any]] | None = None,
     ) -> DetectionResult:
+        """Trace-wrapped entry point; the pipeline itself lives in ``_detect``."""
+        with span("detector.detect", **url_labels(url)):
+            return await self._detect(url, browser_evidence, agent_references)
+
+    async def _detect(
+        self,
+        url: str,
+        browser_evidence: Mapping[str, Any] | None = None,
+        agent_references: Sequence[Mapping[str, Any]] | None = None,
+    ) -> DetectionResult:
         started = time.perf_counter()
         request_id = uuid.uuid4().hex
         try:
             normalized = canonical_url(url)
         except UnsafeURL as exc:
-            return DetectionResult(
+            invalid = DetectionResult(
                 request_id=request_id,
                 url=url,
                 final_url="",
@@ -91,8 +102,14 @@ class Detector:
                 reason_codes=[str(exc)],
                 latency_ms={"total": (time.perf_counter() - started) * 1000},
             )
+            record_detection(invalid)
+            return invalid
 
         intel_match = self.intel.lookup(normalized)
+        if intel_match:
+            METRICS.intel_matches.labels(
+                source=intel_match.source, verdict=intel_match.verdict
+            ).inc()
         if intel_match and intel_match.verdict == "phishing":
             return self._result(
                 request_id, normalized, normalized, Verdict.PHISHING, 1.0, "reputation",
@@ -119,6 +136,9 @@ class Detector:
         else:
             evidence = await self.http.fetch(normalized)
 
+        METRICS.crawl_outcomes.labels(
+            source=evidence.source, status=evidence.status.value
+        ).inc()
         crawl_ms = evidence.elapsed_ms
         if not evidence.usable and self.browser and not browser_evidence and evidence.status in {CrawlStatus.PARTIAL, CrawlStatus.BLOCKED}:
             browser_result = await self.browser.fetch(normalized)
@@ -220,9 +240,16 @@ class Detector:
                 verdict, agent_reasons = self._reconcile_agent(agent_review, features, combined, evidence)
                 reasons.extend(agent_reasons)
                 agent_audit = {"status": "completed", **agent_review.audit_summary()}
+                METRICS.agent_calls.labels(outcome="completed").inc()
+                METRICS.agent_reconciliation.labels(
+                    agent_verdict=str(agent_review.verdict_candidate),
+                    final_verdict=verdict.value,
+                    corroborated=str(verdict != Verdict.SUSPICIOUS).lower(),
+                ).inc()
             except AgentServiceError as exc:
                 reasons.extend(["agent_unavailable", exc.code])
                 agent_audit = {"status": "failed", "error_code": exc.code}
+                METRICS.agent_calls.labels(outcome=f"failed_{exc.code}"[:64]).inc()
                 verdict = Verdict.SUSPICIOUS
             except Exception as exc:
                 reasons.extend(["agent_unavailable", type(exc).__name__.lower()])
@@ -230,8 +257,12 @@ class Detector:
                     "status": "failed",
                     "error_code": f"client_{type(exc).__name__.lower()}",
                 }
+                METRICS.agent_calls.labels(
+                    outcome=f"failed_client_{type(exc).__name__.lower()}"[:64]
+                ).inc()
                 verdict = Verdict.SUSPICIOUS
             agent_ms = (time.perf_counter() - agent_started) * 1000
+            METRICS.agent_duration.observe(agent_ms / 1000.0)
         else:
             agent_ms = 0.0
 
@@ -362,7 +393,7 @@ class Detector:
     ) -> DetectionResult:
         latency = dict(extra_latency or {})
         latency["total"] = (time.perf_counter() - started) * 1000
-        return DetectionResult(
+        result = DetectionResult(
             request_id=request_id,
             url=url,
             final_url=final_url,
@@ -376,6 +407,8 @@ class Detector:
             latency_ms={key: round(float(value), 3) for key, value in latency.items()},
             evidence_summary=dict(evidence),
         )
+        record_detection(result)
+        return result
 
     def _enqueue(self, result: DetectionResult) -> None:
         self.review.enqueue(
@@ -386,6 +419,11 @@ class Detector:
             reason_codes=result.reason_codes,
             evidence=result.evidence_summary,
         )
+        try:
+            METRICS.review_queue_depth.set(len(self.review.pending(500)))
+        except Exception:
+            # Queue depth is a convenience gauge; never fail a detection for it.
+            pass
 
     def _persist(self, result: DetectionResult) -> None:
         self.config.result_dir.mkdir(parents=True, exist_ok=True)

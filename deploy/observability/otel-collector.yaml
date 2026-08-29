@@ -1,0 +1,66 @@
+# OpenTelemetry collector for the PersianPhish stack.
+#
+# Traces arrive over OTLP/HTTP from the detector and the reviewer. The span
+# attributes they carry are already bounded by each service's observability
+# module, but the redaction processor below is a second line of defence: if a
+# future change ever attaches a raw URL, it is dropped here before storage.
+
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+  memory_limiter:
+    check_interval: 5s
+    limit_percentage: 75
+    spike_limit_percentage: 20
+
+  # Defence in depth. Services are contractually forbidden from emitting these,
+  # so anything matched here is a bug worth noticing, not normal traffic.
+  attributes/redact:
+    actions:
+      - key: http.url
+        action: delete
+      - key: url.full
+        action: delete
+      - key: http.target
+        action: delete
+      - key: suspect_url
+        action: delete
+      - key: suspect_html
+        action: delete
+
+resource:
+  attributes:
+    - key: stack
+      value: persianphish
+      action: upsert
+
+exporters:
+  # Traces land in Tempo. Swap this block for your backend of choice; nothing
+  # else in the pipeline needs to change.
+  otlp/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes/redact, batch]
+      exporters: [otlp/tempo]
+  telemetry:
+    logs:
+      level: warn
