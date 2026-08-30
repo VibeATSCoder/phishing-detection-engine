@@ -12,6 +12,22 @@ from .agent import AgentClient, AgentReview, AgentServiceError
 from .config import DetectorConfig
 from .crawl import BrowserCrawler, HttpCrawler, from_browser_payload
 from .domain_facts import collect_domain_facts
+from .enamad import extract_seal, service_is_answering, verify_seal
+
+
+def _deterministic_risk(features: Mapping[str, float], combined_score: float) -> bool:
+    """Risk evidence that does not depend on any model's opinion.
+
+    Extracted so the agent reconciliation and the eNamad corroboration share one
+    definition. Either of them clearing a page that trips this would be clearing
+    on inference over observation.
+    """
+    return (
+        combined_score >= 0.5
+        or features["external_form_action_count"] > 0
+        or features["suspicious_token_count"] >= 2
+        or (features["password_input_count"] > 0 and features["title_domain_token_overlap"] == 0)
+    )
 from .features import extract_features
 from .evidence_codes import derive_evidence
 from .intel import IntelMatch, IntelStore
@@ -64,8 +80,21 @@ class Detector:
             timeout_s=config.agent_timeout_s,
             poll_interval_s=config.agent_poll_interval_s,
         ) if config.agent_base_url else None
+        self._enamad_client: Any = None
+
+    def _enamad_http(self) -> Any:
+        import httpx
+
+        if self._enamad_client is None:
+            self._enamad_client = httpx.AsyncClient(
+                follow_redirects=True, timeout=self.config.enamad_timeout_s
+            )
+        return self._enamad_client
 
     async def close(self) -> None:
+        if self._enamad_client is not None:
+            await self._enamad_client.aclose()
+            self._enamad_client = None
         if self.browser:
             await self.browser.close()
         if self.agent:
@@ -222,6 +251,33 @@ class Detector:
                     verdict = Verdict.LEGITIMATE
                     reasons.append("verified_benign_history_corroboration")
 
+        enamad_audit: dict[str, Any] | None = None
+        if self.config.enamad_verify and evidence.usable:
+            seal = extract_seal(evidence.html or "")
+            if seal is not None:
+                result_enamad = await verify_seal(
+                    seal,
+                    evidence.final_url or normalized,
+                    self._enamad_http(),
+                    timeout_s=self.config.enamad_timeout_s,
+                )
+                enamad_audit = result_enamad.audit_summary()
+                if result_enamad.verified:
+                    reasons.append("enamad_seal_verified")
+                    # A registry with an authority behind it outranks an
+                    # uncertain score, but never a concrete risk signal: a
+                    # certified merchant can still be compromised.
+                    if verdict == Verdict.SUSPICIOUS and not _deterministic_risk(features, combined):
+                        verdict = Verdict.LEGITIMATE
+                        reasons.append("enamad_verified_corroboration")
+                elif result_enamad.displays_unverified_seal:
+                    # Only act on a refusal once the registry is known to be
+                    # answering, so an eNamad outage cannot accuse every sealed
+                    # site of displaying a stolen badge.
+                    if await service_is_answering(self._enamad_http(), timeout_s=self.config.enamad_timeout_s):
+                        reasons.append("enamad_seal_not_certified_for_host")
+                        enamad_audit["refusal_confirmed"] = True
+
         agent_invoked = False
         agent_audit: dict[str, Any] | None = None
         agent_evidence_codes: list[str] = []
@@ -272,6 +328,8 @@ class Detector:
             agent_ms = 0.0
 
         evidence_summary = evidence.public_dict()
+        if enamad_audit is not None:
+            evidence_summary["enamad"] = enamad_audit
         if agent_audit is not None:
             evidence_summary["agent_review"] = agent_audit
         result = self._result(
@@ -360,12 +418,7 @@ class Detector:
         evidence: CrawlEvidence,
     ) -> Tuple[Verdict, list[str]]:
         reasons = ["agent_review_completed", *review.reasons, *review.evidence_codes]
-        deterministic_risk = (
-            combined_score >= 0.5
-            or features["external_form_action_count"] > 0
-            or features["suspicious_token_count"] >= 2
-            or (features["password_input_count"] > 0 and features["title_domain_token_overlap"] == 0)
-        )
+        deterministic_risk = _deterministic_risk(features, combined_score)
         if (
             review.verdict_candidate == "phishing"
             and review.risk_score is not None
