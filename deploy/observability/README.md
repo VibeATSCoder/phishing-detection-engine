@@ -74,6 +74,7 @@ Change it there and in `prometheus.yml` together, or run them on separate hosts.
 | Service | Metrics | Auth |
 |---|---|---|
 | detector | `:8088/metrics` | exempt from `PPD_API_KEY`, same as `/health` |
+| rag | `:8092/metrics` | unauthenticated; its key guard covers `/v1/` only |
 | reviewer | `:8090/metrics` | unauthenticated; its key guard only covers `/api/` |
 | monitor | `:8091/metrics` | unauthenticated; panel key guards only `/api/` |
 
@@ -99,6 +100,11 @@ abstaining correctly":
 - **MonitorAdjudicationFallingBehind** / **DiscoveryStalled** — the monitor can
   be up and healthy while discovering nothing, or while falling days behind on
   VirusTotal checks.
+- **ReferenceLookupsMostlyEmpty** / **ReferenceScoresLow** — the reference index
+  can be loaded and answering while no longer covering the traffic it sees. The
+  reviewer needs `reference_quality >= 0.6` to escape the suspicious floor, and
+  that quality is bounded above by the retrieval score, so a low median score
+  means reviews will simply stop resolving.
 
 Thresholds are starting points. Tune them once you have a week of baseline.
 

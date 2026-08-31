@@ -43,6 +43,13 @@ scrape_configs:
         labels:
           service: phishing-intelligence-monitor
 
+  - job_name: rag
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["rag:8092"]
+        labels:
+          service: phishing-rag-service
+
   - job_name: prometheus
     static_configs:
       - targets: ["localhost:9090"]

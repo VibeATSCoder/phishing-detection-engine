@@ -168,3 +168,56 @@ groups:
         annotations:
           summary: "No CertStream messages for 30 minutes"
           description: "The monitor is up but receiving nothing. New phishing infrastructure is not being discovered."
+
+  - name: reference_retrieval
+    rules:
+      - alert: ReferenceServiceDown
+        expr: up{job="rag"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Reference retrieval is not responding"
+          description: "Reviews fall back to no references, which floors every verdict at suspicious. Detection stays safe; the reviewer stops contributing."
+
+      - alert: ReferenceIndexEmpty
+        expr: rag_index_blocks == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Reference index reports zero blocks"
+          description: "The service is answering but has nothing to retrieve from. Check the mounted index and that build_index_cache.py ran against it."
+
+      # A lookup that finds nothing is a legitimate answer, but a sustained
+      # majority of them means the index no longer covers the traffic it sees.
+      - alert: ReferenceLookupsMostlyEmpty
+        expr: |
+          sum(rate(rag_lookups_total{outcome="empty"}[30m]))
+            / clamp_min(sum(rate(rag_lookups_total[30m])), 0.001) > 0.5
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Over half of reference lookups return nothing"
+          description: "The index likely does not cover current traffic. Check whether the crawl is stale or the suspect pages are client-rendered and yielding no text."
+
+      # The reviewer needs reference_quality >= 0.6 to escape the suspicious
+      # floor, and quality is bounded above by this score.
+      - alert: ReferenceScoresLow
+        expr: histogram_quantile(0.5, sum(rate(rag_top_reference_score_bucket[30m])) by (le)) < 0.5
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: "Median top reference score below 0.5"
+          description: "Retrieval quality is bounded by this, so reviews will rarely resolve above suspicious."
+
+      - alert: ReferenceLookupSlow
+        expr: histogram_quantile(0.95, sum(rate(rag_lookup_duration_seconds_bucket[10m])) by (le)) > 5
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Reference lookup p95 above 5s"
+          description: "The reviewer blocks on this. Dense search is brute force over the whole block matrix; check index size and CPU."
