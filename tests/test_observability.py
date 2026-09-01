@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from persianphish_detector import observability
@@ -15,6 +16,14 @@ from persianphish_detector.observability import (
     url_labels,
 )
 from persianphish_detector.types import CrawlStatus, DetectionResult, Verdict
+
+# The module degrades to no-ops without the observability extra, and the service
+# must keep working that way. These cases inspect metric *content*, which only
+# exists when prometheus_client is installed, so they are skipped rather than
+# weakened into assertions that would pass either way.
+needs_prometheus = pytest.mark.skipif(
+    not observability.PROMETHEUS_AVAILABLE, reason="requires the observability extra"
+)
 
 
 # Golden digests shared with the reviewer, the monitor, and the extension's
@@ -86,6 +95,7 @@ def test_url_labels_do_not_leak_path_or_query():
         assert "reset" not in value
 
 
+@needs_prometheus
 def test_record_detection_counts_every_verdict():
     for verdict in (
         Verdict.LEGITIMATE,
@@ -100,6 +110,7 @@ def test_record_detection_counts_every_verdict():
         assert f'verdict="{verdict}"' in body
 
 
+@needs_prometheus
 def test_record_detection_splits_total_from_per_stage_latency():
     record_detection(result())
     assert any('verdict="suspicious"' in line for line in series_for("ppd_detection_duration_seconds_count"))
@@ -109,6 +120,7 @@ def test_record_detection_splits_total_from_per_stage_latency():
     assert 'stage="total"' not in stage_series
 
 
+@needs_prometheus
 def test_record_detection_tolerates_missing_scores():
     """Fast-path exits carry None scores; they must not raise or be recorded."""
     partial = result(verdict=Verdict.PHISHING, stage="reputation")
@@ -118,6 +130,7 @@ def test_record_detection_tolerates_missing_scores():
     assert any('stage="reputation"' in line for line in series_for("ppd_detections_total"))
 
 
+@needs_prometheus
 def test_metrics_endpoint_serves_prometheus_text(tmp_path: Path):
     with TestClient(create_app(config(tmp_path))) as client:
         response = client.get("/metrics")
@@ -142,6 +155,7 @@ def test_metrics_endpoint_is_exempt_from_the_api_key(tmp_path: Path):
         assert client.get("/v1/review").status_code == 401
 
 
+@needs_prometheus
 def test_http_route_label_is_templated_not_per_request(tmp_path: Path):
     with TestClient(create_app(config(tmp_path))) as client:
         for request_id in ("aaaa1111", "bbbb2222", "cccc3333"):
@@ -153,6 +167,7 @@ def test_http_route_label_is_templated_not_per_request(tmp_path: Path):
         assert not any(request_id in line for line in lines)
 
 
+@needs_prometheus
 def test_build_info_publishes_the_artifact_production_flag():
     set_build_info("3.1.0", "v3-tcn-test", False)
     lines = series_for("ppd_build_info")
