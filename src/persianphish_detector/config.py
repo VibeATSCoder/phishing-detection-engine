@@ -44,6 +44,10 @@ class DetectorConfig:
     max_html_bytes: int = 10_000_000
     max_redirects: int = 5
     min_quality_score: float = 0.55
+    # eNamad verification is a live call to a third-party registry, so it is
+    # opt-in. Absent or unreachable, it produces no signal in either direction.
+    enamad_verify: bool = False
+    enamad_timeout_s: float = 8.0
 
     @classmethod
     def from_env(cls, root: Path | None = None) -> "DetectorConfig":
@@ -71,4 +75,6 @@ class DetectorConfig:
             min_quality_score=_env_float(
                 "PPD_MIN_QUALITY_SCORE", 0.55, minimum=0.0, maximum=1.0
             ),
+            enamad_verify=_env_bool("PPD_ENAMAD_VERIFY", False),
+            enamad_timeout_s=_env_float("PPD_ENAMAD_TIMEOUT_S", 8.0, minimum=1.0, maximum=30.0),
         )
