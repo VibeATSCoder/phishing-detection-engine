@@ -1,0 +1,68 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+# The workflow only reads the repository. Nothing here publishes, so nothing
+# here needs write access.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      # Installed without the browser extra: Chromium is not needed for the
+      # unit tests and downloading it would dominate the run.
+      # The observability extra is needed for the metric-content tests; without
+      # it they skip, which would silently stop testing what they were added for.
+      - run: python -m pip install -e '.[test,observability]'
+      - run: python -m pytest
+      - run: python -m compileall -q src tests
+
+  release-metrics:
+    # The accuracy figures this project publishes previously lived only in
+    # prose, and had drifted from the artifacts without anyone noticing. This
+    # recomputes them from the shipped predictions on every push.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python scripts/check_release_metrics.py
+
+  compatibility-contract:
+    # deploy/COMPATIBILITY.json pins the versions of all three runtime
+    # components. It is easy to bump a version and forget the contract, which
+    # is how it came to disagree with the released tags.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # The observability extra is needed for the metric-content tests; without
+      # it they skip, which would silently stop testing what they were added for.
+      - run: python -m pip install -e '.[test,observability]'
+      - run: python -m pytest tests/test_release_contract.py -v
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build --tag phishing-detection-engine:ci .
+      - name: The image must start and report its own readiness honestly
+        run: |
+          docker run --rm phishing-detection-engine:ci \
+            python -c "from persianphish_detector import __version__; print(__version__)"
