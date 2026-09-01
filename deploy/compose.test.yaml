@@ -1,13 +1,13 @@
 services:
   mock-openrouter:
-    image: agentic-phishing-review:1.3.0-integration-test
+    image: agentic-phishing-review:1.4.0-integration-test
     build:
       context: ${AGENT_REVIEW_CONTEXT:-../../agentic-phishing-review}
       dockerfile: Dockerfile
       target: integration-test
       args:
         INSTALL_BROWSER: "0"
-        APP_VERSION: "1.3.0"
+        APP_VERSION: "1.4.0"
     command: ["python", "/app/scripts/mock_openrouter.py"]
     read_only: true
     tmpfs:

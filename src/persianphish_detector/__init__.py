@@ -3,4 +3,4 @@
 from .types import CrawlEvidence, CrawlStatus, DetectionResult, Verdict
 
 __all__ = ["CrawlEvidence", "CrawlStatus", "DetectionResult", "Verdict"]
-__version__ = "3.1.0"
+__version__ = "3.2.0"

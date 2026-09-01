@@ -21,12 +21,12 @@ def test_health_exposes_service_version(tmp_path: Path):
     with TestClient(create_app(config(tmp_path))) as client:
         response = client.get("/health")
     assert response.status_code == 200
-    assert response.json()["service_version"] == __version__ == "3.1.0"
+    assert response.json()["service_version"] == __version__ == "3.2.0"
 
 
 def test_ready_exposes_version_without_claiming_missing_models_are_ready(tmp_path: Path):
     with TestClient(create_app(config(tmp_path))) as client:
         response = client.get("/ready")
     assert response.status_code == 503
-    assert response.json()["service_version"] == "3.1.0"
+    assert response.json()["service_version"] == "3.2.0"
     assert response.json()["ready"] is False

@@ -2,7 +2,7 @@ name: persianphish-integrated
 
 services:
   review:
-    image: agentic-phishing-review:1.3.0-integrated
+    image: agentic-phishing-review:1.4.0-integrated
     platform: linux/amd64
     environment:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY in .env}
@@ -41,7 +41,7 @@ services:
       options: {max-size: "10m", max-file: "3"}
 
   detector:
-    image: phishing-detection-engine:3.1.0-integrated
+    image: phishing-detection-engine:3.2.0-integrated
     platform: linux/amd64
     depends_on:
       review:
