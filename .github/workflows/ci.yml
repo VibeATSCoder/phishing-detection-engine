@@ -24,7 +24,9 @@ jobs:
           cache: pip
       # Installed without the browser extra: Chromium is not needed for the
       # unit tests and downloading it would dominate the run.
-      - run: python -m pip install -e '.[test]'
+      # The observability extra is needed for the metric-content tests; without
+      # it they skip, which would silently stop testing what they were added for.
+      - run: python -m pip install -e '.[test,observability]'
       - run: python -m pytest
       - run: python -m compileall -q src tests
 
@@ -50,7 +52,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install -e '.[test]'
+      # The observability extra is needed for the metric-content tests; without
+      # it they skip, which would silently stop testing what they were added for.
+      - run: python -m pip install -e '.[test,observability]'
       - run: python -m pytest tests/test_release_contract.py -v
 
   docker:
