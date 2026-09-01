@@ -66,3 +66,18 @@ jobs:
         run: |
           docker run --rm phishing-detection-engine:ci \
             python -c "from persianphish_detector import __version__; print(__version__)"
+      # The observability code is optional-extra guarded, so an image built
+      # without those packages starts fine, serves detections, and answers
+      # /metrics with "# prometheus_client is not installed" — every metric a
+      # silent no-op. That is exactly what shipped. Assert the built image can
+      # actually emit, rather than assuming requirements.txt carries it.
+      - name: The image must be able to emit metrics
+        run: |
+          docker run --rm phishing-detection-engine:ci python -c "
+          from persianphish_detector import observability as o
+          assert o.PROMETHEUS_AVAILABLE, 'metrics are no-ops in this image'
+          body = o.METRICS.render()
+          body = body.decode() if isinstance(body, bytes) else body
+          assert 'ppd_' in body, body[:200]
+          print('metric families:', sum(1 for line in body.splitlines() if line.startswith('# HELP')))
+          "
