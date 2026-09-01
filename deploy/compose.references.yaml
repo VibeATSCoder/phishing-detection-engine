@@ -1,0 +1,65 @@
+# Reference retrieval, as an overlay on deploy/compose.yaml.
+#
+#   RAG_INDEX_HOST_PATH=/path/to/Embedding_Index \
+#   RAG_BASE_URL=http://rag:8092 \
+#   docker compose -f deploy/compose.yaml -f deploy/compose.references.yaml up -d
+#
+# It is a separate file rather than a profile because Compose interpolates every
+# service it parses, including ones no profile selected, so a required
+# RAG_INDEX_HOST_PATH would break a plain `docker compose up` for deployments
+# that do not run this service.
+#
+# Without this overlay the stack runs exactly as before: the reviewer sees an
+# empty RAG_BASE_URL, supplies no comparison references, and the
+# reference-quality rule floors every verdict at suspicious. Degraded, not
+# broken. See deploy/INTEGRATED.md.
+
+name: persianphish-integrated
+
+services:
+  rag:
+    image: phishing-rag-service:0.1.0
+    build:
+      context: ${RAG_CONTEXT:-../../phishing-rag-service}
+      dockerfile: Dockerfile
+    environment:
+      RAG_INDEX_DIR: /data/index
+      RAG_CACHE_DIR: /data/index/_fast
+      RAG_API_KEY: ${RAG_API_KEY:-}
+      RAG_DEVICE: cpu
+      RAG_DEFAULT_TOP_K: ${RAG_TOP_K:-3}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    ports:
+      # Loopback only. This answers questions about pages people visited.
+      - "127.0.0.1:${RAG_HOST_PORT:-8092}:8092"
+    volumes:
+      # Read-only: the service never writes to the index. Build its cache once
+      # with `docker compose run --rm rag python scripts/build_index_cache.py`.
+      - ${RAG_INDEX_HOST_PATH:?set RAG_INDEX_HOST_PATH to the Embedding_Index directory}:/data/index:ro
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    init: true
+    pids_limit: 256
+    # BGE-M3 needs real headroom; below this it is killed mid-request.
+    mem_limit: ${RAG_MEM_LIMIT:-4g}
+    cpus: ${RAG_CPUS:-2.0}
+    restart: unless-stopped
+    stop_grace_period: 20s
+    healthcheck:
+      # /ready stays 503 until the index and model are loaded, which takes a
+      # while on a cold start; the long start_period covers that.
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8092/ready', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 180s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
