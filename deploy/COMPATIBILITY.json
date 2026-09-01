@@ -4,8 +4,8 @@
   "components": {
     "extension": {
       "repository": "https://github.com/VibeATSCoder/phishingshield-persian",
-      "version": "3.4.0",
-      "tag": "v3.4.0"
+      "version": "3.4.1",
+      "tag": "v3.4.1"
     },
     "detector": {
       "repository": "https://github.com/VibeATSCoder/phishing-detection-engine",
@@ -20,8 +20,9 @@
     "rag": {
       "repository": "https://github.com/VibeATSCoder/phishing-rag-service",
       "version": "0.1.0",
-      "tag": "v0.1.0",
-      "optional": true
+      "optional": true,
+      "tag": null,
+      "note": "merged to main; no release tag cut yet"
     }
   },
   "contracts": {

@@ -21,6 +21,15 @@ services:
       REVIEW_USE_BROWSER: "0"
       REVIEW_WORKER_CONCURRENCY: ${REVIEW_WORKER_CONCURRENCY:-2}
       REVIEW_RETENTION_DAYS: ${REVIEW_RETENTION_DAYS:-30}
+      # Reference retrieval. Empty by default, which is a supported
+      # configuration: the reviewer then supplies no comparison references and
+      # the reference-quality rule floors every verdict at suspicious.
+      # Enable by adding the deploy/compose.references.yaml overlay, which
+      # sets this to the reference service inside the stack network.
+      RAG_BASE_URL: ${RAG_BASE_URL:-}
+      RAG_API_KEY: ${RAG_API_KEY:-}
+      RAG_TIMEOUT_S: ${RAG_TIMEOUT_S:-8}
+      RAG_TOP_K: ${RAG_TOP_K:-3}
     ports:
       - "127.0.0.1:${REVIEW_HOST_PORT:-8090}:8090"
     volumes:

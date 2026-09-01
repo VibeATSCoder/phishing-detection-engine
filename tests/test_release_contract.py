@@ -2,6 +2,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 from persianphish_detector import __version__
 
 
@@ -15,7 +17,7 @@ def test_component_versions_and_compose_are_synchronized():
 
     contract = json.loads((ROOT / "deploy" / "COMPATIBILITY.json").read_text(encoding="utf-8"))
     assert contract["components"]["detector"]["version"] == "3.1.0"
-    assert contract["components"]["extension"]["version"] == "3.4.0"
+    assert contract["components"]["extension"]["version"] == "3.4.1"
     assert contract["components"]["reviewer"]["version"] == "1.3.0"
     # Reference retrieval is optional: the reviewer runs without it and simply
     # supplies no references, so a deployment lacking it is degraded rather than
@@ -31,6 +33,37 @@ def test_component_versions_and_compose_are_synchronized():
     assert "phishing-detection-engine:3.1.0-integrated" in compose
     assert "agentic-phishing-review:1.3.0-integrated" in compose
     assert "${AGENT_REVIEW_CONTEXT:-../../agentic-phishing-review}" in compose
+    # The contract declares a reviewer-to-rag call. If the integrated stack
+    # cannot reach a reference service, that declaration describes nothing: the
+    # reviewer reads RAG_BASE_URL and supplies no references when it is empty.
+    assert "RAG_BASE_URL" in compose
+    references = (ROOT / "deploy" / "compose.references.yaml").read_text(encoding="utf-8")
+    assert f"phishing-rag-service:{contract['components']['rag']['version']}" in references
+    # The overlay must stay an overlay. Compose interpolates every service it
+    # parses, so moving this into the base file with a required index path would
+    # break a plain `docker compose up` for deployments that do not run it.
+    assert "\n  rag:\n" not in compose
+
+
+def test_recorded_extension_version_matches_the_extension_repository():
+    """Catch cross-repo drift where both sides of this file agree and are wrong.
+
+    The extension version was recorded here as 3.4.0 while the shipped manifest
+    said 3.4.1. Nothing noticed, because the assertion above and the contract
+    were the same stale constant restating each other. The manifest is the
+    authority; this compares against it whenever the extension is checked out
+    beside this repository, and skips when it is not.
+    """
+    manifest_path = ROOT.parent / "phishingshield-persian" / "manifest.json"
+    if not manifest_path.is_file():
+        pytest.skip("extension repository not checked out beside this one")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    contract = json.loads((ROOT / "deploy" / "COMPATIBILITY.json").read_text(encoding="utf-8"))
+    recorded = contract["components"]["extension"]["version"]
+    assert manifest["version"] == recorded, (
+        f"extension manifest is {manifest['version']} but deploy/COMPATIBILITY.json "
+        f"records {recorded}"
+    )
 
 
 def test_clean_docker_build_does_not_require_runtime_database():

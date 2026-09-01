@@ -98,6 +98,50 @@ Named volumes `detector-data` and `review-data` hold SQLite audit state. Back th
 
 Both ports bind to loopback. To serve remotely, keep the containers private and expose only the detector through a TLS reverse proxy with authentication, a 14 MB request-body limit, rate limiting, and sensible timeouts. The application also enforces streamed-body limits itself. Do not place keys in the image, Compose file, Git, logs, or API request bodies.
 
+## Optional: reference retrieval
+
+The reviewer can ask a retrieval service which known-legitimate pages a suspect
+resembles, and use them as comparison references. This is off by default.
+
+It matters more than "optional" suggests. The reconciliation policy floors every
+verdict at `suspicious` when reference quality is below 0.6, and reference
+quality comes entirely from the references supplied with the review. With none,
+that floor is always active: the LLM verdict is computed, paid for, and then
+discarded. Turning this on is what lets a review resolve to `legitimate`.
+
+It is off by default because the index is a multi-gigabyte directory mounted
+from the host, not baked into the image.
+
+```bash
+# once, to build the fast-load cache in the index directory
+RAG_INDEX_HOST_PATH=/path/to/Embedding_Index \
+  docker compose -f deploy/compose.yaml -f deploy/compose.references.yaml \
+  run --rm --volume /path/to/Embedding_Index:/data/index rag \
+  python scripts/build_index_cache.py
+
+RAG_INDEX_HOST_PATH=/path/to/Embedding_Index \
+RAG_BASE_URL=http://rag:8092 \
+  docker compose -f deploy/compose.yaml -f deploy/compose.references.yaml up -d
+```
+
+`RAG_BASE_URL` is what actually switches it on; the overlay only adds the
+service. Confirm the reviewer picked it up:
+
+```bash
+curl -s localhost:8090/ready | grep reference_service_configured
+```
+
+First start is slow: `/ready` returns 503 until BGE-M3 and the index are loaded,
+which is why the healthcheck allows three minutes before it starts failing.
+
+Measured on 20 simulated clones, references clear the hard `suspicious` floor
+about half the time and reach the bar a `legitimate` verdict needs about one
+time in ten. Whether 0.75 is the right bar for text-only references is an open
+policy question, not a settled one.
+
+Any retrieval failure yields no references rather than an error, so the service
+being down degrades reviews to the same behaviour as not running it at all.
+
 ## Failure behavior
 
 - Invalid/private URLs fail before crawling.
@@ -105,3 +149,4 @@ Both ports bind to loopback. To serve remotely, keep the containers private and 
 - Agent timeout, malformed output, unsupported codes, or service failure returns `suspicious` and queues human review.
 - Confident RF/TCN results do not spend OpenRouter calls.
 - OpenRouter scores are advisory and are never blended into the calibrated RF/TCN score.
+- Reference retrieval failing, timing out, or being absent yields no references; reviews continue and are floored at `suspicious`.
