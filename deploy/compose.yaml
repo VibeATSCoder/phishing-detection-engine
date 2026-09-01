@@ -28,7 +28,12 @@ services:
       # sets this to the reference service inside the stack network.
       RAG_BASE_URL: ${RAG_BASE_URL:-}
       RAG_API_KEY: ${RAG_API_KEY:-}
-      RAG_TIMEOUT_S: ${RAG_TIMEOUT_S:-8}
+      # Matches the service's own default. Retrieval measured 0.35-1.8s idle
+      # and 18s under heavy CPU contention, so this is a ceiling for a bad
+      # moment rather than a typical cost. A timeout yields no references and
+      # is logged as "reference lookup failed: ReadTimeout"; the review
+      # continues and is floored at suspicious.
+      RAG_TIMEOUT_S: ${RAG_TIMEOUT_S:-15}
       RAG_TOP_K: ${RAG_TOP_K:-3}
     ports:
       - "127.0.0.1:${REVIEW_HOST_PORT:-8090}:8090"
