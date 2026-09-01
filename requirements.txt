@@ -10,3 +10,13 @@ pydantic>=2.6,<3
 scikit-learn>=1.3,<1.4
 tldextract>=5.1,<6
 uvicorn[standard]>=0.29,<1
+
+# Observability. Declared as an optional extra in pyproject.toml so the library
+# degrades to no-ops without it, but the shipped service image must actually be
+# able to emit metrics: without these, /metrics answers
+# "# prometheus_client is not installed" and every recorded metric is a no-op.
+# Kept in step with the pyproject extra by test_release_contract.py.
+prometheus-client>=0.20,<1
+opentelemetry-api>=1.25,<2
+opentelemetry-sdk>=1.25,<2
+opentelemetry-exporter-otlp-proto-http>=1.25,<2

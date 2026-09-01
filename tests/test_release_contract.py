@@ -70,3 +70,34 @@ def test_clean_docker_build_does_not_require_runtime_database():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "COPY var" not in dockerfile
     assert 'ARG APP_VERSION=3.1.0' in dockerfile
+
+
+def test_shipped_requirements_carry_the_observability_extra():
+    """The image must be able to emit the metrics the code records.
+
+    observability is an optional extra so the library degrades to no-ops when
+    it is absent. That is right for a library and was wrong for the shipped
+    image: the detector image was built without these packages, so /metrics
+    answered "# prometheus_client is not installed" and every recorded metric
+    was a silent no-op in production.
+
+    requirements.txt is what the Dockerfile installs (via requirements-browser
+    .txt), so the extra's contents must appear there too. This keeps the two
+    lists from drifting apart again.
+    """
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    extra = re.search(r"observability = \[(.*?)\]", pyproject, flags=re.DOTALL)
+    assert extra, "pyproject.toml no longer declares an observability extra"
+    declared = set(re.findall(r'"([^"]+)"', extra.group(1)))
+    assert declared, "the observability extra is empty"
+
+    requirements = (ROOT / "requirements.txt").read_text(encoding="utf-8")
+    shipped = {
+        line.strip()
+        for line in requirements.splitlines()
+        if line.strip() and not line.strip().startswith("#")
+    }
+    missing = declared - shipped
+    assert not missing, (
+        f"declared in the observability extra but not shipped in the image: {sorted(missing)}"
+    )
