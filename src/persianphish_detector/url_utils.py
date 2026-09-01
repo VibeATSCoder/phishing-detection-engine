@@ -41,6 +41,13 @@ class UnsafeURL(ValueError):
     pass
 
 
+# Feature extraction resolves a domain for every href and src on the page, so
+# these run tens of thousands of times per document and dominate the detector's
+# CPU profile — idna.encode alone was 44% of extract_features. Both functions
+# are pure, so caching is behaviour-preserving; the bound keeps a hostile page
+# full of unique URLs from growing memory without limit. Exceptions are not
+# cached, so a malformed URL is re-validated every time, which is what we want.
+@lru_cache(maxsize=50_000)
 def normalize_url(value: str) -> str:
     raw = (value or "").strip()
     if not raw:
@@ -104,6 +111,7 @@ def canonical_url(value: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, query, ""))
 
 
+@lru_cache(maxsize=50_000)
 def hostname(value: str) -> str:
     return (urlsplit(normalize_url(value)).hostname or "").lower()
 

@@ -164,7 +164,7 @@ class Detector:
         facts_started = time.perf_counter()
         facts = await collect_domain_facts(evidence.final_url or normalized, self.config.allow_private_network)
         facts_ms = (time.perf_counter() - facts_started) * 1000
-        features = extract_features(evidence, facts)
+        features = await asyncio.to_thread(extract_features, evidence, facts)
         rf_probability: Optional[float] = None
         ood_fraction = 1.0
         if self.artifact:
@@ -202,7 +202,7 @@ class Detector:
                 facts_started = time.perf_counter()
                 facts = await collect_domain_facts(evidence.final_url or normalized, self.config.allow_private_network)
                 facts_ms += (time.perf_counter() - facts_started) * 1000
-                features = extract_features(evidence, facts)
+                features = await asyncio.to_thread(extract_features, evidence, facts)
                 if self.artifact:
                     rf_probability, ood_fraction = self.artifact.predict_rf(features)
                 tcn_probability = self._predict_tcn(evidence.final_url or normalized)
