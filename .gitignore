@@ -11,3 +11,10 @@ notebooks/.ipynb_checkpoints/
 artifacts/notebook/
 .env
 .DS_Store
+
+# Local deployment artefacts. deploy-bundle/ holds a multi-hundred-megabyte
+# images.tar.gz produced by the bundle scripts, and `git add -A` will happily
+# stage it into a commit that then cannot be pushed.
+deploy-bundle/
+release/
+images/
