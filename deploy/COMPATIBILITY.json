@@ -19,9 +19,9 @@
     },
     "rag": {
       "repository": "https://github.com/VibeATSCoder/phishing-rag-service",
-      "version": "1.0.0",
+      "version": "1.0.1",
       "optional": true,
-      "tag": "v1.0.0"
+      "tag": "v1.0.1"
     }
   },
   "contracts": {
