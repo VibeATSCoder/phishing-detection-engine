@@ -22,7 +22,7 @@ def test_component_versions_and_compose_are_synchronized():
     # Reference retrieval is optional: the reviewer runs without it and simply
     # supplies no references, so a deployment lacking it is degraded rather than
     # broken. The flag is asserted so that status stays deliberate.
-    assert contract["components"]["rag"]["version"] == "1.0.1"
+    assert contract["components"]["rag"]["version"] == "1.0.2"
     assert contract["components"]["rag"]["optional"] is True
     assert contract["contracts"]["reviewer_to_rag"] == "POST /v1/references"
     assert contract["contracts"]["verdicts"] == [

@@ -18,7 +18,7 @@ name: persianphish-integrated
 
 services:
   rag:
-    image: phishing-rag-service:1.0.1
+    image: phishing-rag-service:1.0.2
     build:
       context: ${RAG_CONTEXT:-../../phishing-rag-service}
       dockerfile: Dockerfile
