@@ -16,27 +16,60 @@ The detector supplies its already-crawled DOM to the reviewer. The reviewer send
 - Outbound HTTPS access for crawling and OpenRouter.
 - An OpenRouter API key. No host Python, browser, Node.js, model runtime, or GPU is required.
 
-## Start from released images (recommended)
+## Start with one command (recommended)
 
-No source checkout, no build. Download the two image artefacts, put them in one
-directory, and run the script.
+No checkout, no build, no `gh`. This downloads every release artefact, loads
+each image, writes one aggregated `.env`, and starts the stack:
 
 ```bash
-gh release download v3.2.0 -R VibeATSCoder/phishing-detection-engine \
-  --pattern 'phishing-detection-engine-*' --pattern 'persianphish-stack-*'
-gh release download v1.4.0 -R VibeATSCoder/agentic-phishing-review
-
-tar -xzf persianphish-stack-1.1.0-deploy.tar.gz     # compose files and this guide
-cp deploy/.env.example .env && $EDITOR .env         # set the two required keys
-bash deploy/deploy.sh --image-dir .
+curl -fsSL https://raw.githubusercontent.com/VibeATSCoder/phishing-detection-engine/main/deploy/install.sh | bash
 ```
 
-`deploy.sh` verifies each artefact's checksum before loading it, refuses to
-start unless `OPENROUTER_API_KEY` and `INTERNAL_REVIEW_API_KEY` are set, waits
-for both containers to report healthy, and prints the endpoints. Add
-`--with-references` to include the retrieval service; that also needs
-`RAG_INDEX_HOST_PATH` in `.env` and the reference image loaded from its own
-release, which ships as split parts.
+It stops and tells you what to fill in the first time, because
+`OPENROUTER_API_KEY` and `INTERNAL_REVIEW_API_KEY` have no sensible defaults.
+Set them in `persianphish/deploy/.env`, then:
+
+```bash
+cd persianphish && bash deploy/deploy.sh
+```
+
+Options: `--with-references` also fetches the retrieval service (about 3 GB
+more, and it needs `RAG_INDEX_HOST_PATH` set); `--download-only` fetches and
+loads without starting anything; `--dir` installs somewhere other than
+`./persianphish`.
+
+### Credentials
+
+Public repositories need none. For private ones, either shape works:
+
+```bash
+export GITHUB_TOKEN=ghp_...                    # token alone
+export GITHUB_USER=you GITHUB_TOKEN=ghp_...    # username and token
+```
+
+The installer tries the public download URL first and only falls back to the
+authenticated API. That order matters: the browser download URL answers 404 for
+a token rather than a useful error, because it expects a session cookie, so a
+private asset has to be resolved to an asset id and pulled from the API.
+
+Downloads resume. A dropped connection continues where it stopped rather than
+starting a 699 MB file again.
+
+## Start from released images by hand
+
+If you would rather do it step by step, download the image artefacts and the
+stack bundle from the two releases into one directory, unpack the bundle, and
+run the script:
+
+```bash
+tar -xzf persianphish-stack-1.1.0-deploy.tar.gz     # compose files and this guide
+cp deploy/stack.env.example deploy/.env             # then set the two keys
+bash deploy/deploy.sh
+```
+
+`deploy.sh` finds the artefacts, loads them, refuses to start unless the two
+keys are set, waits for both containers to report healthy, and prints the
+endpoints. Checksums are not verified unless you pass `--verify`.
 
 ## Start from source
 
