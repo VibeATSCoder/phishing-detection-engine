@@ -14,10 +14,11 @@ set -euo pipefail
 
 readonly DETECTOR_VERSION="3.2.1"
 readonly REVIEW_VERSION="1.4.1"
-readonly RAG_VERSION="1.0.2"
+# Overridable from .env, so --with-references matches the image you loaded.
+RAG_VERSION="1.0.2"
 readonly DETECTOR_IMAGE="phishing-detection-engine:${DETECTOR_VERSION}-integrated"
 readonly REVIEW_IMAGE="agentic-phishing-review:${REVIEW_VERSION}-integrated"
-readonly RAG_IMAGE="phishing-rag-service:${RAG_VERSION}"
+RAG_IMAGE="phishing-rag-service:${RAG_VERSION}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 
@@ -96,6 +97,12 @@ load_artefact "${REVIEW_IMAGE}" "agentic-phishing-review-*.tar.gz"
 
 COMPOSE=(-f compose.images.yaml)
 if [ "${WITH_REFERENCES}" -eq 1 ]; then
+  env_rag_version="$(sed -n 's/^RAG_VERSION=//p' .env | tail -n 1)"
+  if [ -n "${env_rag_version//[[:space:]]/}" ]; then
+    RAG_VERSION="${env_rag_version}"
+    RAG_IMAGE="phishing-rag-service:${RAG_VERSION}"
+    echo "using RAG_VERSION=${RAG_VERSION} from .env"
+  fi
   if ! docker image inspect "${RAG_IMAGE}" >/dev/null 2>&1; then
     echo "Missing ${RAG_IMAGE}. It ships as split parts; reassemble it first:" >&2
     echo "  bash load_release.sh phishing-rag-service-${RAG_VERSION}.tar.gz.part00" >&2

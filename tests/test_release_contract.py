@@ -38,7 +38,16 @@ def test_component_versions_and_compose_are_synchronized():
     # reviewer reads RAG_BASE_URL and supplies no references when it is empty.
     assert "RAG_BASE_URL" in compose
     references = (ROOT / "deploy" / "compose.references.yaml").read_text(encoding="utf-8")
-    assert f"phishing-rag-service:{contract['components']['rag']['version']}" in references
+    # The pin is a Compose default rather than a literal, so the overlay follows
+    # whichever image was loaded. The recorded version must still be that default.
+    assert (
+        "phishing-rag-service:${RAG_VERSION:-"
+        f"{contract['components']['rag']['version']}"
+        "}"
+    ) in references
+    # No build section: a tag that is not loaded must fail, not silently build a
+    # ~9 GB image from source.
+    assert "build:" not in references
     # The overlay must stay an overlay. Compose interpolates every service it
     # parses, so moving this into the base file with a required index path would
     # break a plain `docker compose up` for deployments that do not run it.
