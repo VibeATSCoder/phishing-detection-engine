@@ -110,3 +110,28 @@ def test_shipped_requirements_carry_the_observability_extra():
     assert not missing, (
         f"declared in the observability extra but not shipped in the image: {sorted(missing)}"
     )
+
+
+def test_installer_versions_match_the_stack_contract():
+    """The one-command installer downloads by version, so it must not drift.
+
+    deploy/install.sh names the release tags it fetches. If those fall behind
+    COMPATIBILITY.json, the installer quietly pulls an older stack than the one
+    this repository claims to ship, and nothing else would notice.
+    """
+    installer = (ROOT / "deploy" / "install.sh").read_text(encoding="utf-8")
+    contract = json.loads((ROOT / "deploy" / "COMPATIBILITY.json").read_text(encoding="utf-8"))
+
+    expected = {
+        "DETECTOR_VERSION": contract["components"]["detector"]["version"],
+        "REVIEW_VERSION": contract["components"]["reviewer"]["version"],
+        "RAG_VERSION": contract["components"]["rag"]["version"],
+        "STACK_VERSION": contract["stack_version"],
+    }
+    for name, version in expected.items():
+        found = re.search(rf'^{name}="\$\{{{name}:-([^}}]+)\}}"', installer, flags=re.MULTILINE)
+        assert found, f"install.sh no longer defines a default for {name}"
+        assert found.group(1) == version, (
+            f"install.sh defaults {name} to {found.group(1)}, "
+            f"but the contract records {version}"
+        )
