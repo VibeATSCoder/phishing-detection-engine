@@ -98,6 +98,12 @@ jobs:
           tag="${{ inputs.tag || github.ref_name }}"
           version="${tag#v}"
           name="phishing-detection-engine-${version}.tar.gz"
+          # A tag push can arrive before anyone has written release notes, and
+          # `gh release upload` fails outright when the release does not exist.
+          # Create an empty one rather than losing the built artefacts.
+          gh release view "$tag" >/dev/null 2>&1 \
+            || gh release create "$tag" --verify-tag --title "$tag" \
+                 --notes "Automated image publication for $tag."
           gh release upload "$tag" \
             "$name" "${name}.sha256" \
             "$STACK_BUNDLE" "${STACK_BUNDLE}.sha256" --clobber
