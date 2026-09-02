@@ -8,6 +8,12 @@
 #   deploy.sh                      images alongside this script (or --image-dir)
 #   deploy.sh --image-dir ~/dl     images downloaded elsewhere
 #   deploy.sh --with-references    also start the retrieval service
+#   deploy.sh --verify             check artefact checksums before loading
+#
+# Checksums are not verified by default. A mismatch used to abort the deploy,
+# which turned a mangled .sha256 text file into a hard stop even when the image
+# itself was fine. docker load rejects a damaged archive on its own, so a bad
+# artefact still cannot be installed silently.
 #
 # Required in .env: OPENROUTER_API_KEY and INTERNAL_REVIEW_API_KEY.
 set -euo pipefail
@@ -22,23 +28,46 @@ RAG_IMAGE="phishing-rag-service:${RAG_VERSION}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR
 
-IMAGE_DIR="${SCRIPT_DIR}"
+# Empty means "look in the usual places". Resolved to an absolute path below,
+# before the script changes directory.
+IMAGE_DIR=""
 WITH_REFERENCES=0
+VERIFY_CHECKSUMS=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --image-dir) IMAGE_DIR="${2:?--image-dir needs a path}"; shift 2 ;;
     --with-references) WITH_REFERENCES=1; shift ;;
-    -h|--help) sed -n '2,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --verify) VERIFY_CHECKSUMS=1; shift ;;
+    -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 
-for command in docker sha256sum; do
-  if ! command -v "${command}" >/dev/null 2>&1; then
-    echo "Required command is missing: ${command}" >&2
+# Resolve before the cd below, or a relative --image-dir (". " being the obvious
+# one to type) silently becomes the script's own directory and nothing is found.
+if [ -n "${IMAGE_DIR}" ]; then
+  if [ ! -d "${IMAGE_DIR}" ]; then
+    echo "--image-dir is not a directory: ${IMAGE_DIR}" >&2
     exit 1
   fi
-done
+  IMAGE_DIR="$(cd -- "${IMAGE_DIR}" && pwd)"
+  SEARCH_DIRS=("${IMAGE_DIR}")
+else
+  # The artefacts normally sit beside the unpacked bundle, one level up from
+  # this script, so look there as well as here.
+  SEARCH_DIRS=("${SCRIPT_DIR}" "$(cd -- "${SCRIPT_DIR}/.." && pwd)" "${PWD}")
+fi
+
+# Only docker is required. sha256sum used to be, which meant a host without
+# coreutils could not deploy at all even though nothing needed hashing.
+if ! command -v docker >/dev/null 2>&1; then
+  echo "Required command is missing: docker" >&2
+  exit 1
+fi
+if [ "${VERIFY_CHECKSUMS}" -eq 1 ] && ! command -v sha256sum >/dev/null 2>&1; then
+  echo "--verify needs sha256sum, which is not installed." >&2
+  exit 1
+fi
 if ! docker compose version >/dev/null 2>&1; then
   echo "Docker Compose v2 is required (the 'docker compose' command)." >&2
   exit 1
@@ -72,20 +101,25 @@ load_artefact() { # image_ref  glob
     echo "already loaded: ${image}"
     return 0
   fi
-  local matches=()
-  # find takes the pattern as a literal, so it needs no unquoted glob expansion.
-  mapfile -t matches < <(find "${IMAGE_DIR}" -maxdepth 1 -name "${pattern}" | sort)
+  local matches=() dir
+  for dir in "${SEARCH_DIRS[@]}"; do
+    # find takes the pattern as a literal, so it needs no unquoted glob expansion.
+    mapfile -t matches < <(find "${dir}" -maxdepth 1 -name "${pattern}" 2>/dev/null | sort)
+    [ ${#matches[@]} -gt 0 ] && break
+  done
   if [ ${#matches[@]} -eq 0 ]; then
-    echo "Missing ${image} and no artefact matching ${pattern} in ${IMAGE_DIR}." >&2
-    echo "Download it from the GitHub release for that component." >&2
+    echo "Missing ${image} and no artefact matching ${pattern}." >&2
+    echo "Looked in:" >&2
+    printf '  %s\n' "${SEARCH_DIRS[@]}" >&2
+    echo "Download it from the GitHub release for that component, or pass" >&2
+    echo "--image-dir with the directory holding the .tar.gz files." >&2
     return 1
   fi
   artefact="${matches[0]}"
-  if [ -f "${artefact}.sha256" ]; then
+  # Opt-in only; see the note at the top of this file.
+  if [ "${VERIFY_CHECKSUMS}" -eq 1 ] && [ -f "${artefact}.sha256" ]; then
     echo "verifying $(basename "${artefact}")"
     ( cd "$(dirname "${artefact}")" && sha256sum --check "$(basename "${artefact}").sha256" )
-  else
-    echo "warning: no checksum beside $(basename "${artefact}"); loading unverified" >&2
   fi
   echo "loading $(basename "${artefact}")"
   gunzip -c "${artefact}" | docker load
