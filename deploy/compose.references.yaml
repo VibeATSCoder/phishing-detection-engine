@@ -18,10 +18,19 @@ name: persianphish-integrated
 
 services:
   rag:
-    image: phishing-rag-service:1.0.2
-    build:
-      context: ${RAG_CONTEXT:-../../phishing-rag-service}
-      dockerfile: Dockerfile
+    # Overridable, so this matches whatever image you actually loaded rather
+    # than forcing a specific one:
+    #   RAG_VERSION=1.0.2 docker compose ... up -d
+    image: phishing-rag-service:${RAG_VERSION:-1.0.2}
+    # Never reach for a registry: this image is not published to one, so a
+    # missing tag otherwise fails with "pull access denied", which reads like an
+    # authentication problem rather than "you have not loaded that version".
+    pull_policy: never
+    # Deliberately no build section. With one, a tag that is not loaded makes
+    # Compose build a ~9 GB image from source instead of reporting the mismatch,
+    # which is how loading 1.0.2 while an older bundle pinned 1.0.0 turned into
+    # a silent half-hour rebuild. Load the image from the reference service's
+    # own release; it ships as split parts with a loader.
     environment:
       RAG_INDEX_DIR: /data/index
       RAG_CACHE_DIR: /data/index/_fast
