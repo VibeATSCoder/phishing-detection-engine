@@ -1,0 +1,103 @@
+name: release
+
+# Publishes the runnable image and the stack deployment bundle to the GitHub
+# release, so a target host can `docker load` instead of building from source.
+#
+# Built on a runner rather than a workstation deliberately: measured upload
+# throughput from a developer machine to GitHub was 38 KB/s, which is over five
+# hours for this image alone.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and attach assets to (e.g. v3.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      # The image is ~2.6 GB and the browser layer is large. A default runner
+      # has enough, but not with much to spare once the tarball exists too.
+      - name: Reclaim runner disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "$AGENT_TOOLSDIRECTORY" || true
+          df -h /
+
+      - name: The tag must match the version the code declares
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          version="$(python3 -c "import re;print(re.search(r'__version__ = \"([^\"]+)\"', open('src/persianphish_detector/__init__.py').read()).group(1))")"
+          echo "tag=$tag version=$version"
+          test "$tag" = "v${version}"
+
+      - name: Build the image
+        run: |
+          set -euo pipefail
+          version="${{ inputs.tag || github.ref_name }}"; version="${version#v}"
+          docker build --platform linux/amd64 --build-arg "APP_VERSION=${version}" \
+            --tag "phishing-detection-engine:${version}" .
+
+      - name: Save and checksum
+        run: |
+          set -euo pipefail
+          version="${{ inputs.tag || github.ref_name }}"; version="${version#v}"
+          name="phishing-detection-engine-${version}.tar.gz"
+          docker save "phishing-detection-engine:${version}" | gzip > "$name"
+          sha256sum "$name" > "${name}.sha256"
+          ls -lh "$name"
+
+      - name: The published artefact must load
+        run: |
+          set -euo pipefail
+          version="${{ inputs.tag || github.ref_name }}"; version="${version#v}"
+          name="phishing-detection-engine-${version}.tar.gz"
+          sha256sum -c "${name}.sha256"
+          docker image rm "phishing-detection-engine:${version}"
+          gunzip -c "$name" | docker load
+          docker run --rm "phishing-detection-engine:${version}" \
+            python -c "from persianphish_detector import __version__ as v; assert v == '${version}', v; print('loaded', v)"
+
+      - name: Assemble the stack deployment bundle
+        run: |
+          set -euo pipefail
+          stack="$(python3 -c "import json;print(json.load(open('deploy/COMPATIBILITY.json'))['stack_version'])")"
+          dir="persianphish-stack-${stack}-deploy"
+          mkdir -p "$dir/deploy"
+          cp deploy/compose.yaml deploy/compose.images.yaml deploy/compose.references.yaml \
+             deploy/COMPATIBILITY.json deploy/INTEGRATED.md "$dir/deploy/"
+          [ -f deploy/IMAGE_BUNDLE.md ] && cp deploy/IMAGE_BUNDLE.md "$dir/deploy/"
+          tar -czf "${dir}.tar.gz" "$dir"
+          sha256sum "${dir}.tar.gz" > "${dir}.tar.gz.sha256"
+          echo "STACK_BUNDLE=${dir}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Attach to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="${{ inputs.tag || github.ref_name }}"
+          version="${tag#v}"
+          name="phishing-detection-engine-${version}.tar.gz"
+          gh release upload "$tag" \
+            "$name" "${name}.sha256" \
+            "$STACK_BUNDLE" "${STACK_BUNDLE}.sha256" --clobber
