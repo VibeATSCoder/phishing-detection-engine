@@ -16,7 +16,29 @@ The detector supplies its already-crawled DOM to the reviewer. The reviewer send
 - Outbound HTTPS access for crawling and OpenRouter.
 - An OpenRouter API key. No host Python, browser, Node.js, model runtime, or GPU is required.
 
-## Start
+## Start from released images (recommended)
+
+No source checkout, no build. Download the two image artefacts, put them in one
+directory, and run the script.
+
+```bash
+gh release download v3.2.0 -R VibeATSCoder/phishing-detection-engine \
+  --pattern 'phishing-detection-engine-*' --pattern 'persianphish-stack-*'
+gh release download v1.4.0 -R VibeATSCoder/agentic-phishing-review
+
+tar -xzf persianphish-stack-1.1.0-deploy.tar.gz     # compose files and this guide
+cp deploy/.env.example .env && $EDITOR .env         # set the two required keys
+bash deploy/deploy.sh --image-dir .
+```
+
+`deploy.sh` verifies each artefact's checksum before loading it, refuses to
+start unless `OPENROUTER_API_KEY` and `INTERNAL_REVIEW_API_KEY` are set, waits
+for both containers to report healthy, and prints the endpoints. Add
+`--with-references` to include the retrieval service; that also needs
+`RAG_INDEX_HOST_PATH` in `.env` and the reference image loaded from its own
+release, which ships as split parts.
+
+## Start from source
 
 Clone the two backend repositories as siblings:
 
