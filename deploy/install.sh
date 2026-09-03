@@ -21,6 +21,12 @@
 #   export GITHUB_USER=you GITHUB_TOKEN=ghp_...       # username + token
 #   NO_TOKEN_DISCOVERY=1 bash install.sh              # look nowhere
 #
+# ASSET_BASE_URL serves the artefacts from somewhere other than GitHub, for a
+# network that reaches a mirror faster. Any plain HTTP server will do, and a
+# missing file falls back to GitHub:
+#
+#   ASSET_BASE_URL=https://files.example.ir/persianphish bash install.sh --full
+#
 # Safe to re-run at any point. An image already loaded is never downloaded
 # again, a partial download resumes, and a corrupt one is detected and replaced
 # rather than fed to docker load.
@@ -154,6 +160,15 @@ fi
 # detected without needing a checksum. Empty when it cannot be determined.
 remote_size() { # repo tag name
   local repo="$1" tag="$2" name="$3" size="" headers
+  if [ -n "${ASSET_BASE_URL:-}" ]; then
+    if headers="$(curl -fsIL --retry 3 --retry-all-errors \
+                    "${ASSET_BASE_URL%/}/${name}" 2>/dev/null)"; then
+      printf '%s' "$(printf '%s' "${headers}" | tr -d '\r' \
+              | awk 'BEGIN{IGNORECASE=1} /^content-length:/ {n=$2} END{print n}')"
+      return 0
+    fi
+    return 0
+  fi
   # The success of the request has to gate the parse. A private asset answers
   # 404 with a nine-byte "Not Found" body, and its headers still reach stdout
   # before curl exits non-zero, so reading them unconditionally yields an
@@ -200,6 +215,29 @@ fetch_asset() { # repo tag name
     echo "  resume ${name} (${local_size} of ${expected:-?} bytes)"
   else
     echo "  get   ${name}${expected:+ ($((expected / 1048576)) MB)}"
+  fi
+
+  # A mirror, when the deployment network reaches one faster than it reaches
+  # GitHub. Measured from a machine with ordinary connectivity, GitHub sustains
+  # ~2.6 MB/s and Cloudflare's own speed test ~3.1 MB/s, so mirroring buys
+  # nothing there and is not the default. It matters where GitHub is throttled
+  # or blocked, which is exactly where this stack tends to be deployed.
+  #
+  # Plain HTTP GET by filename, so anything serves it: nginx, S3, a bucket
+  # behind a CDN, or `python3 -m http.server` in the directory. Falls through to
+  # GitHub when the mirror does not have the file, so a partial mirror is fine.
+  if [ -n "${ASSET_BASE_URL:-}" ]; then
+    if curl -fL -C - --retry 10 --retry-delay 5 --retry-all-errors --progress-bar \
+         -o "${name}" "${ASSET_BASE_URL%/}/${name}" 2>/dev/null; then
+      echo "    from ${ASSET_BASE_URL%/}"
+      if [ -n "${expected}" ]; then
+        local_size="$(stat -c%s "${name}" 2>/dev/null || echo 0)"
+        [ "${local_size}" = "${expected}" ] \
+          || die "${name} is ${local_size} bytes but the mirror said ${expected}"
+      fi
+      return 0
+    fi
+    echo "    not on the mirror; falling back to GitHub" >&2
   fi
 
   if curl -fL -C - --retry 10 --retry-delay 5 --retry-all-errors --progress-bar \
