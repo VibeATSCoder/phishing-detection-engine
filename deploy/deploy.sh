@@ -22,8 +22,8 @@ readonly DETECTOR_VERSION="3.2.1"
 readonly REVIEW_VERSION="1.4.1"
 # Overridable from .env, so --with-references matches the image you loaded.
 RAG_VERSION="1.0.2"
-readonly DETECTOR_IMAGE="phishing-detection-engine:${DETECTOR_VERSION}-integrated"
-readonly REVIEW_IMAGE="agentic-phishing-review:${REVIEW_VERSION}-integrated"
+readonly DETECTOR_IMAGE="phishing-detection-engine:${DETECTOR_VERSION}"
+readonly REVIEW_IMAGE="agentic-phishing-review:${REVIEW_VERSION}"
 RAG_IMAGE="phishing-rag-service:${RAG_VERSION}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR

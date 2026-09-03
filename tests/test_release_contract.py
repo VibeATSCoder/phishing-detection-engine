@@ -30,7 +30,7 @@ def test_component_versions_and_compose_are_synchronized():
     ]
 
     compose = (ROOT / "deploy" / "compose.yaml").read_text(encoding="utf-8")
-    assert "phishing-detection-engine:3.2.1-integrated" in compose
+    assert "phishing-detection-engine:3.2.1-integrated" in compose  # build-from-source tag
     assert "agentic-phishing-review:1.4.1-integrated" in compose
     assert "${AGENT_REVIEW_CONTEXT:-../../agentic-phishing-review}" in compose
     # The contract declares a reviewer-to-rag call. If the integrated stack
