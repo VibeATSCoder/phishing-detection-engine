@@ -192,10 +192,10 @@ ensure_image() { # image  repo tag artefact
 }
 
 step "images"
-ensure_image "phishing-detection-engine:${DETECTOR_VERSION}-integrated" \
+ensure_image "phishing-detection-engine:${DETECTOR_VERSION}" \
   phishing-detection-engine "v${DETECTOR_VERSION}" \
   "phishing-detection-engine-${DETECTOR_VERSION}.tar.gz"
-ensure_image "agentic-phishing-review:${REVIEW_VERSION}-integrated" \
+ensure_image "agentic-phishing-review:${REVIEW_VERSION}" \
   agentic-phishing-review "v${REVIEW_VERSION}" \
   "agentic-phishing-review-${REVIEW_VERSION}.tar.gz"
 
