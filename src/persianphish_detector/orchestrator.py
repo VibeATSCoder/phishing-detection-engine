@@ -4,8 +4,9 @@ import asyncio
 import json
 import time
 import uuid
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
 from .agent import AgentClient, AgentReview, AgentServiceError
@@ -13,6 +14,43 @@ from .config import DetectorConfig
 from .crawl import BrowserCrawler, HttpCrawler, from_browser_payload
 from .domain_facts import collect_domain_facts
 from .enamad import extract_seal, service_is_answering, verify_seal
+
+
+def _rf_input_features(
+    features: Mapping[str, float],
+    evidence: Any,
+    facts: Any,
+    score_origin: bool,
+) -> tuple[Mapping[str, float], bool]:
+    """Score the Random Forest on the origin, not the browsed URL.
+
+    Not one of the 935 legitimate rows in the training corpus carries a URL
+    path, while 153 of the 845 phishing rows do. The forest therefore only ever
+    saw a path on a phishing example and learned the collection artifact rather
+    than phishing: on identical page HTML, changing the final URL from
+    aparat.com/ to aparat.com/home moves its probability from 0.074 to 0.962,
+    and digikala.com/ to digikala.com/home from 0.035 to 0.960. Every subpage of
+    every legitimate site is flagged.
+
+    Feeding it the origin puts the input back in the distribution it was fitted
+    on. Path and query risk is not discarded: `features` is still derived from
+    the full URL and remains what `_deterministic_risk`, the token counts and
+    the TCN read, so a hostile path on a clean origin is still caught by the
+    signals that do not depend on the forest's opinion.
+
+    Returns the features to score and whether the origin view was used.
+    """
+    if not score_origin:
+        return features, False
+    browsed = evidence.final_url or evidence.target_url or ""
+    parsed = urlsplit(browsed)
+    if not parsed.scheme or not parsed.netloc:
+        return features, False
+    origin = f"{parsed.scheme}://{parsed.netloc}/"
+    if origin == browsed:
+        return features, False
+    origin_view = replace(evidence, final_url=origin, redirect_chain=[origin])
+    return extract_features(origin_view, facts), True
 
 
 def _deterministic_risk(features: Mapping[str, float], combined_score: float) -> bool:
@@ -194,10 +232,13 @@ class Detector:
         facts = await collect_domain_facts(evidence.final_url or normalized, self.config.allow_private_network)
         facts_ms = (time.perf_counter() - facts_started) * 1000
         features = await asyncio.to_thread(extract_features, evidence, facts)
+        rf_features, scored_origin = _rf_input_features(
+            features, evidence, facts, self.config.score_origin
+        )
         rf_probability: Optional[float] = None
         ood_fraction = 1.0
         if self.artifact:
-            rf_probability, ood_fraction = self.artifact.predict_rf(features)
+            rf_probability, ood_fraction = self.artifact.predict_rf(rf_features)
         tcn_probability = self._predict_tcn(evidence.final_url or normalized)
         combined = self._combine_scores(rf_probability, tcn_probability)
         scores = {"rf": rf_probability, "tcn": tcn_probability, "combined": combined, "ood_fraction": ood_fraction}
@@ -217,6 +258,9 @@ class Detector:
                         verdict = Verdict.SUSPICIOUS
                         reasons.append("bootstrap_phishing_requires_corroboration")
 
+        if scored_origin:
+            reasons.append("rf_scored_on_origin")
+
         if self._can_corroborate_benign(intel_match, features, combined, ood_fraction):
             verdict = Verdict.LEGITIMATE
             reasons.extend(["verified_benign_history_corroboration", f"intel_{intel_match.source}"])
@@ -232,8 +276,18 @@ class Detector:
                 facts = await collect_domain_facts(evidence.final_url or normalized, self.config.allow_private_network)
                 facts_ms += (time.perf_counter() - facts_started) * 1000
                 features = await asyncio.to_thread(extract_features, evidence, facts)
+                # The browser pass re-scores, so it needs the same origin view.
+                # Patching only the first site left every rendered page scored on
+                # its full URL, which is most of them: the browser pass is what
+                # runs whenever the fast stage is uncertain.
+                rf_features, rendered_on_origin = _rf_input_features(
+                    features, evidence, facts, self.config.score_origin
+                )
+                if rendered_on_origin and not scored_origin:
+                    scored_origin = True
+                    reasons.append("rf_scored_on_origin")
                 if self.artifact:
-                    rf_probability, ood_fraction = self.artifact.predict_rf(features)
+                    rf_probability, ood_fraction = self.artifact.predict_rf(rf_features)
                 tcn_probability = self._predict_tcn(evidence.final_url or normalized)
                 combined = self._combine_scores(rf_probability, tcn_probability)
                 scores = {"rf": rf_probability, "tcn": tcn_probability, "combined": combined, "ood_fraction": ood_fraction}
