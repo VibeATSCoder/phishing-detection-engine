@@ -21,6 +21,19 @@ services:
       REVIEW_USE_BROWSER: "0"
       REVIEW_WORKER_CONCURRENCY: ${REVIEW_WORKER_CONCURRENCY:-2}
       REVIEW_RETENTION_DAYS: ${REVIEW_RETENTION_DAYS:-30}
+      # Reference retrieval. Empty by default, which is a supported
+      # configuration: the reviewer then supplies no comparison references.
+      #
+      # These were present in the build-from-source compose and missing here,
+      # which is the file every released deployment actually uses. The effect
+      # was that --full started a healthy retrieval service, wrote RAG_BASE_URL
+      # into .env, and the reviewer container still never received it: all three
+      # containers healthy, retrieval answering queries, and
+      # reference_service_configured false.
+      RAG_BASE_URL: ${RAG_BASE_URL:-}
+      RAG_API_KEY: ${RAG_API_KEY:-}
+      RAG_TIMEOUT_S: ${RAG_TIMEOUT_S:-15}
+      RAG_TOP_K: ${RAG_TOP_K:-3}
     ports:
       - "127.0.0.1:${REVIEW_HOST_PORT:-8090}:8090"
     volumes:
