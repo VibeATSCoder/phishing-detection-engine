@@ -46,6 +46,11 @@ class DetectorConfig:
     min_quality_score: float = 0.55
     # eNamad verification is a live call to a third-party registry, so it is
     # opt-in. Absent or unreachable, it produces no signal in either direction.
+    # The forest was trained on bare origins only: not one of the 935
+    # legitimate rows carries a URL path. Scoring a browsed subpage is therefore
+    # out of distribution, so the origin is scored instead. See
+    # _rf_input_features in orchestrator.py.
+    score_origin: bool = True
     enamad_verify: bool = False
     enamad_timeout_s: float = 8.0
 
@@ -75,6 +80,7 @@ class DetectorConfig:
             min_quality_score=_env_float(
                 "PPD_MIN_QUALITY_SCORE", 0.55, minimum=0.0, maximum=1.0
             ),
+            score_origin=_env_bool("PPD_SCORE_ORIGIN", True),
             enamad_verify=_env_bool("PPD_ENAMAD_VERIFY", False),
             enamad_timeout_s=_env_float("PPD_ENAMAD_TIMEOUT_S", 8.0, minimum=1.0, maximum=30.0),
         )
