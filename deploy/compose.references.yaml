@@ -54,8 +54,19 @@ services:
       - no-new-privileges:true
     init: true
     pids_limit: 256
-    # BGE-M3 needs real headroom; below this it is killed mid-request.
-    mem_limit: ${RAG_MEM_LIMIT:-4g}
+    # The index is memory-mapped and its pages count against this limit in
+    # cgroups v2, so the ceiling has to cover roughly 3.5 GB of index plus a
+    # 2.2 GB model plus runtime, not just the process. Measured on the real
+    # index, same container, same query:
+    #
+    #    4g   15s and climbing   exceeds the reviewer's 15s timeout, so every
+    #                            lookup returned no references at all
+    #    8g   5-7s               comfortably inside it
+    #   12g   2.6-4.7s           better still, if the host can spare it
+    #
+    # 4g did not fail loudly. It answered, slowly enough that the caller had
+    # already given up, and the reviewer recorded a timeout rather than a fault.
+    mem_limit: ${RAG_MEM_LIMIT:-8g}
     cpus: ${RAG_CPUS:-2.0}
     restart: unless-stopped
     stop_grace_period: 20s
