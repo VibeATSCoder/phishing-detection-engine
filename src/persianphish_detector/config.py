@@ -51,7 +51,19 @@ class DetectorConfig:
     # out of distribution, so the origin is scored instead. See
     # _rf_input_features in orchestrator.py.
     score_origin: bool = True
-    enamad_verify: bool = False
+    # Registry evidence with an authority behind it, and the strongest
+    # legitimacy signal available for an Iranian site. Only ever acts when the
+    # page actually shows a badge: absence means nothing and is never counted
+    # against a site. Confirmed to extract on browser-rendered pages —
+    # digikala.com, alibaba.ir, tapsi.ir, sheypoor.com and zarinpal.com all
+    # expose a seal in the rendered DOM though not in server HTML — and the
+    # check already runs after the browser pass, so it sees that DOM.
+    #
+    # On a network with no route to the registry every attempt returns
+    # unavailable, which is not an answer, so a breaker stops asking after three
+    # consecutive failures. That bounds the cost of enabling this to three
+    # timeouts per cooldown rather than one per review.
+    enamad_verify: bool = True
     enamad_timeout_s: float = 8.0
 
     @classmethod
@@ -81,6 +93,6 @@ class DetectorConfig:
                 "PPD_MIN_QUALITY_SCORE", 0.55, minimum=0.0, maximum=1.0
             ),
             score_origin=_env_bool("PPD_SCORE_ORIGIN", True),
-            enamad_verify=_env_bool("PPD_ENAMAD_VERIFY", False),
+            enamad_verify=_env_bool("PPD_ENAMAD_VERIFY", True),
             enamad_timeout_s=_env_float("PPD_ENAMAD_TIMEOUT_S", 8.0, minimum=1.0, maximum=30.0),
         )
