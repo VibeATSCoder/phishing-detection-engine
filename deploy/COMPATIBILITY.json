@@ -9,13 +9,13 @@
     },
     "detector": {
       "repository": "https://github.com/VibeATSCoder/phishing-detection-engine",
-      "version": "3.2.1",
-      "tag": "v3.2.1"
+      "version": "3.3.0",
+      "tag": "v3.3.0"
     },
     "reviewer": {
       "repository": "https://github.com/VibeATSCoder/agentic-phishing-review",
-      "version": "1.4.1",
-      "tag": "v1.4.1"
+      "version": "1.5.0",
+      "tag": "v1.5.0"
     },
     "rag": {
       "repository": "https://github.com/VibeATSCoder/phishing-rag-service",

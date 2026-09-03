@@ -11,10 +11,14 @@
 #   bash install.sh --dir ~/somewhere    install somewhere other than ./persianphish
 #   bash install.sh --recheck            re-verify sizes of files already present
 #
-# Credentials. Public repositories need none. For private ones, either:
+# Credentials are found automatically, in this order: an exported GITHUB_TOKEN
+# or GH_TOKEN, then `gh auth token`, then git's credential helper, then an
+# export in a shell profile. Public repositories need none at all. To override
+# or to force basic auth:
 #
 #   export GITHUB_TOKEN=ghp_...                       # token alone
 #   export GITHUB_USER=you GITHUB_TOKEN=ghp_...       # username + token
+#   NO_TOKEN_DISCOVERY=1 bash install.sh              # look nowhere
 #
 # Safe to re-run at any point. An image already loaded is never downloaded
 # again, a partial download resumes, and a corrupt one is detected and replaced
@@ -31,8 +35,8 @@ RECHECK=0
 # Versions this stack releases as. deploy/COMPATIBILITY.json records the same
 # numbers and tests/test_release_contract.py asserts the two agree, so these
 # cannot drift from the contract unnoticed.
-DETECTOR_VERSION="${DETECTOR_VERSION:-3.2.1}"
-REVIEW_VERSION="${REVIEW_VERSION:-1.4.1}"
+DETECTOR_VERSION="${DETECTOR_VERSION:-3.3.0}"
+REVIEW_VERSION="${REVIEW_VERSION:-1.5.0}"
 RAG_VERSION="${RAG_VERSION:-1.0.2}"
 STACK_VERSION="${STACK_VERSION:-1.1.0}"
 
@@ -59,18 +63,76 @@ docker compose version >/dev/null 2>&1 \
 docker info >/dev/null 2>&1 \
   || die "cannot talk to the Docker daemon; is it running, and is your user in the docker group?"
 
-# Two auth shapes, because both are in common use. A username with a token is
-# HTTP basic; a token alone is a bearer credential. Neither is needed while a
-# repository is public.
+# Find a token wherever this machine already keeps one, rather than making the
+# operator export it first. Every source below is somewhere a token legitimately
+# lives on a machine that already talks to this GitHub account, and each is read
+# only, so the common case is genuinely one line with nothing set up.
+discover_token() {
+  local token=""
+
+  # 1. Already exported, under either of the two names in common use.
+  token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
+  if [ -n "${token}" ]; then printf '%s|%s' "${token}" "environment"; return 0; fi
+
+  # 2. The GitHub CLI, if it is installed and logged in. This is the usual case
+  #    on a developer machine and needs nothing from the operator.
+  if command -v gh >/dev/null 2>&1; then
+    token="$(gh auth token 2>/dev/null || true)"
+    if [ -n "${token}" ]; then printf '%s|%s' "${token}" "gh auth"; return 0; fi
+  fi
+
+  # 3. Git's credential helper, which is what a previous `git push` populated.
+  #    Answering with a blank line ends the prompt if no helper is configured,
+  #    so this cannot hang waiting for input.
+  if command -v git >/dev/null 2>&1; then
+    token="$(printf 'protocol=https\nhost=github.com\n\n' \
+             | git credential fill 2>/dev/null \
+             | sed -n 's/^password=//p' | head -n 1)"
+    if [ -n "${token}" ]; then printf '%s|%s' "${token}" "git credential helper"; return 0; fi
+  fi
+
+  # 4. A shell profile that exports one. Read with sed rather than sourced: this
+  #    script must never execute someone's profile as a side effect.
+  #
+  #    Values that are variable references are skipped. A profile very commonly
+  #    contains both the real token and a line aliasing it, as in
+  #    `export GH_TOKEN="$GITHUB_TOKEN"`, and taking the last match hands back
+  #    the literal string "$GITHUB_TOKEN", which then fails as a 401 that looks
+  #    like a bad token rather than a parsing mistake.
+  local profile candidate
+  for profile in "${HOME}/.bashrc" "${HOME}/.bash_profile" "${HOME}/.profile" "${HOME}/.zshrc"; do
+    [ -r "${profile}" ] || continue
+    while IFS= read -r candidate; do
+      # shellcheck disable=SC2016  # matching a literal $, not expanding one
+      case "${candidate}" in
+        ''|'$'*|*'${'*) continue ;;
+      esac
+      printf '%s|%s' "${candidate}" "$(basename "${profile}")"
+      return 0
+    done <<EOF
+$(sed -n 's/^[[:space:]]*export[[:space:]]\{1,\}\(GITHUB_TOKEN\|GH_TOKEN\)=["'"'"']\{0,1\}\([^"'"'"'[:space:]]\{1,\}\).*/\2/p' "${profile}")
+EOF
+  done
+
+  return 1
+}
+
 AUTH=()
+TOKEN_SOURCE=""
+if [ -z "${GITHUB_TOKEN:-}" ] && [ "${NO_TOKEN_DISCOVERY:-0}" != "1" ]; then
+  if found="$(discover_token)"; then
+    GITHUB_TOKEN="${found%%|*}"
+    TOKEN_SOURCE="${found##*|}"
+  fi
+fi
 if [ -n "${GITHUB_USER:-}" ] && [ -n "${GITHUB_TOKEN:-}" ]; then
   AUTH=(-u "${GITHUB_USER}:${GITHUB_TOKEN}")
-  echo "authenticating as ${GITHUB_USER}"
+  echo "authenticating as ${GITHUB_USER}${TOKEN_SOURCE:+ (token from ${TOKEN_SOURCE})}"
 elif [ -n "${GITHUB_TOKEN:-}" ]; then
   AUTH=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
-  echo "authenticating with a token"
+  echo "authenticating with a token${TOKEN_SOURCE:+ from ${TOKEN_SOURCE}}"
 else
-  echo "no credentials set; only public repositories will be reachable"
+  echo "no credentials found; only public repositories will be reachable"
 fi
 
 mkdir -p "${INSTALL_DIR}" || die "cannot create ${INSTALL_DIR}"
