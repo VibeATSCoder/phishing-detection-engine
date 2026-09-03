@@ -147,6 +147,20 @@ if [ "${WITH_REFERENCES}" -eq 1 ]; then
     echo "RAG_INDEX_HOST_PATH must point at the Embedding_Index directory in .env." >&2
     exit 1
   fi
+  # Starting the service is not the same as using it. The reviewer reads
+  # RAG_BASE_URL and supplies no references when it is empty, so without this
+  # --full brought up a healthy retrieval service that nothing ever called:
+  # /ready reported reference_service_configured false while the container sat
+  # there answering queries for no one. Caught in a clean-container install.
+  if ! grep -q '^RAG_BASE_URL=..*' .env; then
+    if grep -q '^RAG_BASE_URL=' .env; then
+      sed -i.bak 's|^RAG_BASE_URL=.*|RAG_BASE_URL=http://rag:8092|' .env
+      rm -f .env.bak
+    else
+      printf '\nRAG_BASE_URL=http://rag:8092\n' >> .env
+    fi
+    echo "pointed the reviewer at the retrieval service"
+  fi
   COMPOSE+=(-f compose.references.yaml)
   echo "reference retrieval enabled"
 fi
