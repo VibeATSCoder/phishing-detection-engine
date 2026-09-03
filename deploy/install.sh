@@ -12,6 +12,16 @@
 #   bash install.sh --dir ~/somewhere    install somewhere other than ./persianphish
 #   bash install.sh --recheck            re-verify sizes of files already present
 #
+# If you already downloaded the release files by hand, or you want to, run it
+# interactively and pick how the images should be provided:
+#
+#   bash install.sh -i                   ask, then do it
+#   bash install.sh --artefact-dir ~/dl  use files already downloaded to ~/dl
+#   bash install.sh --manual             print each link and wait while you fetch it
+#
+# --artefact-dir may be given more than once, and is searched before anything is
+# downloaded, so a file you already have is never fetched twice.
+#
 # Credentials are found automatically, in this order: an exported GITHUB_TOKEN
 # or GH_TOKEN, then `gh auth token`, then git's credential helper, then an
 # export in a shell profile. Public repositories need none at all. To override
@@ -27,6 +37,21 @@
 #
 #   ASSET_BASE_URL=https://files.example.ir/persianphish bash install.sh --full
 #
+# A Hugging Face dataset repository works as that mirror with no extra tooling:
+# it is free, has no size or egress limit that this stack comes close to, serves
+# from a CDN, and its download path is exactly the ${BASE}/${name} shape used
+# above. Measured against the GitHub releases from the same machine, GitHub
+# sustained 2.81 MB/s and Hugging Face 4.42 MB/s, and both support the ranged
+# resume this script relies on. Upload the mirrored directory once:
+#
+#   pip install -U huggingface_hub && hf auth login
+#   hf upload <user>/persianphish-artifacts <mirror-dir> . --repo-type=dataset
+#
+# then install from it, with no credentials needed by the operator at all:
+#
+#   ASSET_BASE_URL=https://huggingface.co/datasets/<user>/persianphish-artifacts/resolve/main \
+#     bash install.sh --full
+#
 # Safe to re-run at any point. An image already loaded is never downloaded
 # again, a partial download resumes, and a corrupt one is detected and replaced
 # rather than fed to docker load.
@@ -38,6 +63,13 @@ INSTALL_DIR="${PWD}/persianphish"
 WITH_REFERENCES=0
 DOWNLOAD_ONLY=0
 RECHECK=0
+# How the image artefacts are obtained. auto downloads them; local takes them
+# from a directory they were downloaded to earlier; manual prints each link and
+# waits for the operator to fetch it. INTERACTIVE asks which, rather than
+# assuming, because the right answer depends on what the network allows.
+SOURCE_MODE="auto"
+INTERACTIVE=0
+ARTEFACT_DIRS=()
 
 # Versions this stack releases as. deploy/COMPATIBILITY.json records the same
 # numbers and tests/test_release_contract.py asserts the two agree, so these
@@ -53,6 +85,11 @@ while [ $# -gt 0 ]; do
     --with-references|--full) WITH_REFERENCES=1; shift ;;
     --download-only) DOWNLOAD_ONLY=1; shift ;;
     --recheck) RECHECK=1; shift ;;
+    -i|--interactive) INTERACTIVE=1; shift ;;
+    --manual) SOURCE_MODE="manual"; shift ;;
+    --artefact-dir)
+      ARTEFACT_DIRS+=("${2:?--artefact-dir needs a path}")
+      SOURCE_MODE="local"; shift 2 ;;
     -h|--help) sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -60,6 +97,123 @@ done
 
 die() { echo; echo "install failed: $*" >&2; exit 1; }
 step() { echo; echo "== $*"; }
+
+# ------------------------------------------------------ asking the operator ---
+# Read from the terminal, never from stdin. The documented way to run this is
+# `curl ... | bash`, which hands the script itself to bash on stdin: a plain
+# `read` there consumes the rest of the script instead of waiting for an answer.
+HAVE_TTY=0
+[ -r /dev/tty ] && HAVE_TTY=1
+# Returns 1 when the terminal is at end of input. The caller has to act on
+# that: a prompt loop that treats EOF as an empty answer never terminates, it
+# just reprints the question forever at whatever speed the CPU allows.
+ask() { # prompt  default -> answer on stdout
+  local prompt="$1" default="${2:-}" reply=""
+  if [ "${HAVE_TTY}" -eq 0 ]; then
+    printf '%s' "${default}"
+    return 1
+  fi
+  printf '%s' "${prompt}" > /dev/tty
+  if ! IFS= read -r reply < /dev/tty; then
+    printf '%s' "${default}"
+    return 1
+  fi
+  printf '%s' "${reply:-${default}}"
+}
+
+# Bytes as something a person can compare against what their browser reported.
+human_size() {
+  local n="${1:-}"
+  [ -n "${n}" ] || return 0
+  if   [ "${n}" -ge 1073741824 ]; then printf '%s.%s GB' "$((n / 1073741824))" "$(( (n % 1073741824) * 10 / 1073741824 ))"
+  elif [ "${n}" -ge 1048576 ];    then printf '%s MB' "$((n / 1048576))"
+  elif [ "${n}" -ge 1024 ];       then printf '%s KB' "$((n / 1024))"
+  else printf '%s bytes' "${n}"; fi
+}
+say() { # write to the terminal when there is one, so prompts are not piped away
+  if [ "${HAVE_TTY}" -eq 1 ]; then echo "$*" > /dev/tty; else echo "$*"; fi
+}
+
+# The link an operator would click. Public releases serve this directly; for a
+# private repository it is the page to open while signed in, which is the whole
+# reason manual mode exists — a browser has the session cookie that a token
+# cannot substitute for on this path.
+asset_url() { # repo tag name
+  printf 'https://github.com/%s/%s/releases/download/%s/%s' "${OWNER}" "$1" "$2" "$3"
+}
+
+# Take a file the operator already has instead of downloading it. Searched
+# before every download, in every mode, so pointing at a directory of
+# half-finished downloads resumes them rather than starting over.
+#
+# Hard-linked when possible and copied otherwise: the source directory may be a
+# separate filesystem, and multi-gigabyte artefacts should not be duplicated
+# just to move them one directory over when they need not be.
+adopt_local() { # name  expected_size -> 0 if the file is now in the install dir
+  local name="$1" expected="${2:-}" dir src size
+  for dir in ${ARTEFACT_DIRS[@]+"${ARTEFACT_DIRS[@]}"}; do
+    src="${dir%/}/${name}"
+    [ -f "${src}" ] || continue
+    size="$(stat -c%s "${src}" 2>/dev/null || echo 0)"
+    if [ -n "${expected}" ] && [ "${size}" != "${expected}" ]; then
+      echo "  skip  ${src} is ${size} bytes, expected ${expected}" >&2
+      continue
+    fi
+    [ "$(readlink -f "${src}")" = "$(readlink -f "./${name}")" ] && return 0
+    ln "${src}" "./${name}" 2>/dev/null || cp "${src}" "./${name}" || continue
+    echo "  use   ${name} from ${dir%/}"
+    return 0
+  done
+  return 1
+}
+
+# Ask for one file to be fetched by hand, and do not continue until it is there.
+# Re-checks after every answer rather than trusting the confirmation, because
+# the failure this exists to catch — a browser that saved a 404 page, or saved
+# to Downloads instead of here — looks exactly like success to the operator.
+prompt_for_asset() { # repo tag name expected
+  local repo="$1" tag="$2" name="$3" expected="${4:-}" url reply size
+  url="$(asset_url "${repo}" "${tag}" "${name}")"
+  while :; do
+    say ""
+    say "  needed: ${name}${expected:+  ($(human_size "${expected}"))}"
+    say "  from:   ${url}"
+    say "  into:   $(pwd)"
+    if [ "${HAVE_TTY}" -eq 0 ]; then
+      die "manual mode needs a terminal to ask on. Download install.sh and run it directly rather than piping it to bash."
+    fi
+    if ! reply="$(ask '  [Enter] once downloaded, (d) download it for me, (q) quit: ' '')"; then
+      die "no answer available on the terminal, so ${name} cannot be asked for.
+Either download it to $(pwd) and run again, or drop --manual to fetch it here."
+    fi
+    case "${reply}" in
+      q|Q) die "stopped at ${name}. Re-run when you have it; nothing already downloaded is lost." ;;
+      d|D) return 1 ;;  # caller falls through to the normal download path
+    esac
+    if [ ! -f "./${name}" ]; then
+      # The overwhelmingly common case: saved to the browser's download folder.
+      if adopt_local "${name}" "${expected}"; then return 0; fi
+      for dir in "${HOME}/Downloads" "${HOME}/downloads" "${HOME}"; do
+        if [ -f "${dir}/${name}" ]; then
+          say "  found it in ${dir}, taking it from there"
+          ln "${dir}/${name}" "./${name}" 2>/dev/null || cp "${dir}/${name}" "./${name}"
+          break
+        fi
+      done
+    fi
+    if [ ! -f "./${name}" ]; then
+      say "  ${name} is still not in $(pwd) — check the filename matches exactly"
+      continue
+    fi
+    size="$(stat -c%s "./${name}" 2>/dev/null || echo 0)"
+    if [ -n "${expected}" ] && [ "${size}" != "${expected}" ]; then
+      say "  ${name} is ${size} bytes but should be ${expected}; the download is incomplete"
+      continue
+    fi
+    echo "  have  ${name} (provided by hand)"
+    return 0
+  done
+}
 
 # ------------------------------------------------------------- preflight ---
 for required in docker curl python3 tar gzip; do
@@ -69,6 +223,55 @@ docker compose version >/dev/null 2>&1 \
   || die "Docker Compose v2 is required (the 'docker compose' command)"
 docker info >/dev/null 2>&1 \
   || die "cannot talk to the Docker daemon; is it running, and is your user in the docker group?"
+
+# ----------------------------------------------------- interactive choices ---
+# Only when asked for, and only with a terminal to ask on: the one-line install
+# has to stay non-interactive, and piping this script to bash leaves no tty.
+if [ "${INTERACTIVE}" -eq 1 ]; then
+  [ "${HAVE_TTY}" -eq 1 ] \
+    || die "-i needs a terminal. Download install.sh and run it directly rather than piping it to bash."
+  say ""
+  say "How should the images be provided?"
+  say "  1) Download them now from the GitHub releases   (default)"
+  say "  2) Use files I have already downloaded          (I will give the directory)"
+  say "  3) Show me each link and wait while I download  (for a browser-only network)"
+  case "$(ask '  choice [1]: ' 1)" in
+    2) SOURCE_MODE="local" ;;
+    3) SOURCE_MODE="manual" ;;
+    *) SOURCE_MODE="auto" ;;
+  esac
+
+  if [ "${SOURCE_MODE}" = "local" ] && [ ${#ARTEFACT_DIRS[@]} -eq 0 ]; then
+    while :; do
+      answer="$(ask "  directory holding the downloaded files [${PWD}]: " "${PWD}")" \
+        || die "no answer available on the terminal; pass --artefact-dir instead"
+      # ~ is not expanded by read, so a typed ~/dl would otherwise be a
+      # directory literally named "~".
+      answer="${answer/#\~/${HOME}}"
+      if [ -d "${answer}" ]; then
+        ARTEFACT_DIRS+=("${answer}")
+        say "  using $(cd -- "${answer}" && pwd)"
+        break
+      fi
+      say "  no such directory: ${answer}"
+    done
+  fi
+
+  if [ "${WITH_REFERENCES}" -eq 0 ]; then
+    say ""
+    say "Include the reference retrieval service? It improves the reviewer's"
+    say "judgement but adds 2.9 GB to download and needs 8 GB of memory to run."
+    case "$(ask '  include it? [y/N]: ' n)" in
+      y|Y|yes|YES) WITH_REFERENCES=1 ;;
+    esac
+  fi
+  unset answer
+fi
+
+# Files already downloaded are worth finding whatever the mode: an interrupted
+# run leaves them in the install directory, and the operator may simply have put
+# them where they ran the script from.
+ARTEFACT_DIRS+=("${INSTALL_DIR}" "${PWD}")
 
 # Find a token wherever this machine already keeps one, rather than making the
 # operator export it first. Every source below is somewhere a token legitimately
@@ -89,11 +292,20 @@ discover_token() {
   fi
 
   # 3. Git's credential helper, which is what a previous `git push` populated.
-  #    Answering with a blank line ends the prompt if no helper is configured,
-  #    so this cannot hang waiting for input.
+  #
+  #    GIT_TERMINAL_PROMPT=0 is what keeps this from hanging, and it is not
+  #    optional. Closing stdin does not stop git asking: with no helper able to
+  #    answer, it opens the terminal directly and prompts for a GitHub username
+  #    and password. That went unnoticed for as long as this script only ever
+  #    ran non-interactively, where there is no terminal to prompt on. Running
+  #    it with -i or --manual gave it one, and token discovery then sat on
+  #    "Username for 'https://github.com':" and swallowed the operator's answers
+  #    to the install's own questions. GIT_ASKPASS covers the helpers that pop a
+  #    window instead of using the terminal.
   if command -v git >/dev/null 2>&1; then
     token="$(printf 'protocol=https\nhost=github.com\n\n' \
-             | git credential fill 2>/dev/null \
+             | GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true GCM_INTERACTIVE=never \
+               git credential fill 2>/dev/null \
              | sed -n 's/^password=//p' | head -n 1)"
     if [ -n "${token}" ]; then printf '%s|%s' "${token}" "git credential helper"; return 0; fi
   fi
@@ -214,7 +426,21 @@ fetch_asset() { # repo tag name
     fi
     echo "  resume ${name} (${local_size} of ${expected:-?} bytes)"
   else
-    echo "  get   ${name}${expected:+ ($((expected / 1048576)) MB)}"
+    # A file the operator already fetched, wherever they put it. Checked before
+    # any request so --artefact-dir never re-downloads what it was given, and so
+    # manual mode only asks for what is genuinely absent.
+    adopt_local "${name}" "${expected}" && return 0
+    if [ "${SOURCE_MODE}" = "manual" ]; then
+      # Returns non-zero only when the operator asked for it to be downloaded
+      # after all, which falls through to the normal path below.
+      prompt_for_asset "${repo}" "${tag}" "${name}" "${expected}" && return 0
+    elif [ "${SOURCE_MODE}" = "local" ]; then
+      die "${name} is not in any of the directories given.
+Download it from
+  $(asset_url "${repo}" "${tag}" "${name}")
+into one of them and run again, or drop --artefact-dir to download it here."
+    fi
+    echo "  get   ${name}${expected:+ ($(human_size "${expected}"))}"
   fi
 
   # A mirror, when the deployment network reaches one faster than it reaches
