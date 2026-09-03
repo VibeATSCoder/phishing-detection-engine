@@ -221,3 +221,72 @@ def test_the_cache_key_includes_the_host():
     stolen = asyncio.run(verify_seal(CONTROL_SEAL, "zarinpal-login.example", client))
     assert good.verified and not stolen.verified
     assert len(client.calls) == 2
+
+
+# --- circuit breaker -------------------------------------------------------
+# eNamad is not routable from every network. Without a breaker each uncertain
+# review carrying a badge waits the full timeout to learn nothing, because
+# "unreachable" is deliberately not an answer and so is never cached.
+
+class _AlwaysDown:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def get(self, *args, **kwargs):
+        self.calls += 1
+        raise OSError("no route to host")
+
+
+def test_an_unreachable_registry_stops_being_asked(monkeypatch):
+    import asyncio
+
+    from persianphish_detector import enamad
+
+    enamad.clear_cache()
+    enamad.reset_breaker()
+    client = _AlwaysDown()
+
+    async def run() -> None:
+        for index in range(8):
+            # A different seal each time, so the answer cache cannot mask this.
+            seal = enamad.EnamadSeal(seal_id=str(1000 + index), code="a" * 20)
+            result = await enamad.verify_seal(seal, "example.ir", client, timeout_s=0.1)
+            assert result.unavailable is True
+            assert result.verified is False
+            # The outcome never changes; only the cost does.
+            assert result.displays_unverified_seal is False
+
+    asyncio.run(run())
+    assert client.calls == enamad._BREAKER_THRESHOLD, (
+        "after the threshold the registry should not be contacted again"
+    )
+    enamad.reset_breaker()
+
+
+def test_the_breaker_reopens_after_the_cooldown(monkeypatch):
+    import asyncio
+
+    from persianphish_detector import enamad
+
+    enamad.clear_cache()
+    enamad.reset_breaker()
+    client = _AlwaysDown()
+
+    async def run() -> None:
+        for index in range(enamad._BREAKER_THRESHOLD):
+            await enamad.verify_seal(
+                enamad.EnamadSeal(seal_id=str(2000 + index), code="b" * 20),
+                "example.ir", client, timeout_s=0.1,
+            )
+        assert client.calls == enamad._BREAKER_THRESHOLD
+        # Pretend the cooldown elapsed; one probe must be let through so a
+        # recovered registry is noticed rather than ignored forever.
+        enamad._breaker["opened_at"] -= enamad._BREAKER_COOLDOWN_S + 1
+        await enamad.verify_seal(
+            enamad.EnamadSeal(seal_id="2999", code="c" * 20),
+            "example.ir", client, timeout_s=0.1,
+        )
+        assert client.calls == enamad._BREAKER_THRESHOLD + 1
+
+    asyncio.run(run())
+    enamad.reset_breaker()

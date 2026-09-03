@@ -197,6 +197,40 @@ def _cache_put(key: tuple[str, str], result: "EnamadResult") -> None:
     _CACHE[key] = (time.monotonic(), result)
 
 
+# The registry is intermittent by nature and, on some networks, simply not
+# routable. Without a breaker each uncertain review with a badge waits the full
+# timeout to learn nothing, because "unreachable" is deliberately not an answer.
+# After a run of consecutive failures, stop asking for a while.
+_BREAKER_THRESHOLD = 3
+_BREAKER_COOLDOWN_S = 300.0
+_breaker: dict[str, float] = {"failures": 0.0, "opened_at": 0.0}
+
+
+def _breaker_open() -> bool:
+    if _breaker["failures"] < _BREAKER_THRESHOLD:
+        return False
+    if time.monotonic() - _breaker["opened_at"] >= _BREAKER_COOLDOWN_S:
+        # Let one request through to find out whether it came back.
+        _breaker["failures"] = 0.0
+        return False
+    return True
+
+
+def _record_unreachable() -> None:
+    _breaker["failures"] += 1
+    if _breaker["failures"] == _BREAKER_THRESHOLD:
+        _breaker["opened_at"] = time.monotonic()
+
+
+def _record_reachable() -> None:
+    _breaker["failures"] = 0.0
+
+
+def reset_breaker() -> None:
+    _breaker["failures"] = 0.0
+    _breaker["opened_at"] = 0.0
+
+
 def clear_cache() -> None:
     _CACHE.clear()
 
@@ -222,6 +256,13 @@ async def verify_seal(
     cached = _cache_get(key)
     if cached is not None:
         return cached
+    if _breaker_open():
+        # The registry is not answering at all from this network. Verified
+        # against a host with no route to it: every attempt spent the full
+        # timeout and returned unavailable, which is not an answer, so each
+        # uncertain review paid the wait and learned nothing. Reporting
+        # unavailable immediately keeps the outcome identical and the cost zero.
+        return EnamadResult(seal=seal, unavailable=True)
     try:
         response = await client.get(
             VERIFY_URL,
@@ -230,7 +271,9 @@ async def verify_seal(
             timeout=timeout_s,
         )
     except Exception:
+        _record_unreachable()
         return EnamadResult(seal=seal, unavailable=True)
+    _record_reachable()
 
     status = getattr(response, "status_code", 0)
     if status == 500:
