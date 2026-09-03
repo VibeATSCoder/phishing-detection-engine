@@ -8,6 +8,7 @@
 #   deploy.sh                      images alongside this script (or --image-dir)
 #   deploy.sh --image-dir ~/dl     images downloaded elsewhere
 #   deploy.sh --with-references    also start the retrieval service
+#   deploy.sh --full               same as --with-references
 #   deploy.sh --verify             check artefact checksums before loading
 #
 # Checksums are not verified by default. A mismatch used to abort the deploy,
@@ -36,7 +37,7 @@ VERIFY_CHECKSUMS=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --image-dir) IMAGE_DIR="${2:?--image-dir needs a path}"; shift 2 ;;
-    --with-references) WITH_REFERENCES=1; shift ;;
+    --with-references|--full) WITH_REFERENCES=1; shift ;;
     --verify) VERIFY_CHECKSUMS=1; shift ;;
     -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
