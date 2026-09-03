@@ -6,7 +6,8 @@
 # or, having downloaded it:
 #
 #   bash install.sh                      detector + reviewer
-#   bash install.sh --with-references    also the retrieval service (~3 GB more)
+#   bash install.sh --full               everything, including reference retrieval
+#   bash install.sh --with-references    same as --full
 #   bash install.sh --download-only      fetch and load, do not start
 #   bash install.sh --dir ~/somewhere    install somewhere other than ./persianphish
 #   bash install.sh --recheck            re-verify sizes of files already present
@@ -43,10 +44,10 @@ STACK_VERSION="${STACK_VERSION:-1.1.0}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --dir) INSTALL_DIR="${2:?--dir needs a path}"; shift 2 ;;
-    --with-references) WITH_REFERENCES=1; shift ;;
+    --with-references|--full) WITH_REFERENCES=1; shift ;;
     --download-only) DOWNLOAD_ONLY=1; shift ;;
     --recheck) RECHECK=1; shift ;;
-    -h|--help) sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -301,6 +302,30 @@ done
 [ -f deploy/compose.images.yaml ] || die "deploy/compose.images.yaml is missing"
 chmod +x deploy/deploy.sh
 
+# The retrieval service mounts its index from the host rather than carrying it
+# in the image, so --full needs a path that only this machine knows. Look in the
+# places it actually lands before asking the operator for it.
+discover_index() {
+  local candidate
+  for candidate in \
+    "${RAG_INDEX_HOST_PATH:-}" \
+    "${PWD}/Embedding_Index" \
+    "${HOME}/Embedding_Index" \
+    /var/services/idk/Phishing_RAG/Phishing_RAG_S3_Output/Output/Embedding_Index \
+    /data/Embedding_Index \
+    /opt/persianphish/Embedding_Index
+  do
+    [ -n "${candidate}" ] || continue
+    # block_index.parquet is the file the retriever opens first, so its presence
+    # is what makes a directory an index rather than a directory of that name.
+    if [ -f "${candidate}/block_index.parquet" ]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 step "configuration"
 if [ ! -f deploy/.env ]; then
   curl -fsSL --retry 3 -o deploy/.env "${RAW}/deploy/stack.env.example" 2>/dev/null \
@@ -318,7 +343,18 @@ for key in OPENROUTER_API_KEY INTERNAL_REVIEW_API_KEY; do
 done
 if [ "${WITH_REFERENCES}" -eq 1 ]; then
   value="$(sed -n 's/^RAG_INDEX_HOST_PATH=//p' deploy/.env | tail -n 1)"
-  [ -z "${value//[[:space:]]/}" ] && missing="${missing} RAG_INDEX_HOST_PATH"
+  if [ -z "${value//[[:space:]]/}" ]; then
+    if index_dir="$(discover_index)"; then
+      # sed with | as the delimiter, because the value is a path.
+      sed -i.bak "s|^RAG_INDEX_HOST_PATH=.*|RAG_INDEX_HOST_PATH=${index_dir}|" deploy/.env
+      rm -f deploy/.env.bak
+      echo "  found the reference index at ${index_dir}"
+    else
+      missing="${missing} RAG_INDEX_HOST_PATH"
+      echo "  no reference index found; set RAG_INDEX_HOST_PATH in deploy/.env" >&2
+      echo "  it is the Embedding_Index directory containing block_index.parquet" >&2
+    fi
+  fi
 fi
 
 run_cmd="cd $(pwd) && bash deploy/deploy.sh"
