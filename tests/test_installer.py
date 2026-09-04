@@ -318,3 +318,48 @@ def test_group_membership_is_read_from_the_database_not_the_process() -> None:
 def test_the_install_path_is_quoted_in_the_start_command() -> None:
     """An unquoted path breaks cd as soon as a directory contains a space."""
     assert """run_cmd="cd '$(pwd)' && bash deploy/deploy.sh\"""" in SOURCE
+
+
+def test_references_are_offered_on_an_ordinary_run() -> None:
+    """The question used to require -i, so the one-line install never mentioned
+    the retrieval service at all — including to someone who already had the
+    image sitting on disk."""
+    assert "The reference retrieval service compares" in SOURCE
+    block = SOURCE.split("Asked whenever there is a terminal", 1)
+    assert len(block) == 2, "the references question must have its own guard"
+    guard = block[1].split("\n", 6)[4]
+    assert "SOURCE_MODE" not in guard, (
+        "--artefact-dir must not skip the references question: having the images "
+        "locally is exactly when the reference image is likely to be local too"
+    )
+
+
+def test_a_local_reference_image_is_found_before_downloading() -> None:
+    assert "find_local_rag()" in SOURCE
+    assert "phishing-rag-service:${RAG_VERSION}" in SOURCE
+    assert "tar.gz.part00" in SOURCE
+
+
+def test_helpers_are_defined_before_the_questions_that_call_them() -> None:
+    """bash resolves a function at the point of call, and these three used to sit
+    several hundred lines below the prompt that used them."""
+    question = SOURCE.index("The reference retrieval service compares")
+    for name in ("find_local_rag()", "host_memory_gb()", "discover_index()"):
+        assert SOURCE.index(f"\n{name} {{") < question, f"{name} is defined too late"
+
+
+def test_the_memory_warning_is_honest_about_the_consequence() -> None:
+    """Below 8 GB the queries exceed the reviewer's timeout and no references
+    arrive, which presents as a broken service rather than a starved one."""
+    assert "host_memory_gb" in SOURCE
+    assert "exceed the reviewer's timeout" in SOURCE
+
+
+def test_local_artefacts_are_not_promised_as_a_skipped_download() -> None:
+    """find_local_rag only sees filenames; each file is still size-checked."""
+    said = [
+        line for line in SOURCE.splitlines()
+        if line.strip().startswith(("say ", "echo ")) and "no download needed" in line
+    ]
+    assert not said, f"promised to the operator on: {said}"
+    assert "checked against the release before use" in SOURCE
