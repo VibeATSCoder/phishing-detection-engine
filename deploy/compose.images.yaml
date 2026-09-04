@@ -67,7 +67,7 @@ services:
       options: {max-size: "10m", max-file: "3"}
 
   detector:
-    image: phishing-detection-engine:${DETECTOR_VERSION:-3.4.0}
+    image: phishing-detection-engine:${DETECTOR_VERSION:-3.4.1}
     platform: linux/amd64
     pull_policy: never
     depends_on:

@@ -66,3 +66,68 @@ def test_the_detector_accepts_nothing_the_reviewer_cannot_send() -> None:
     """Not harmful, but it means the two lists have drifted and one is stale."""
     extra = ALLOWED_EVIDENCE_CODES - REVIEWER_EVIDENCE_CODES
     assert not extra, f"accepted but never emitted: {sorted(extra)}"
+
+
+# --------------------------------------------------- corroboration ownership ---
+
+from persianphish_detector.agent import AgentReview
+from persianphish_detector.orchestrator import Detector
+from persianphish_detector.types import CrawlEvidence, CrawlStatus, Verdict
+
+
+def _review(reasons: list[str]) -> AgentReview:
+    return AgentReview(
+        analysis_id="a", verdict_candidate="phishing", risk_score=0.95,
+        confidence=0.93, reasons=reasons,
+    )
+
+
+#: Features of a brand-impersonation page: nothing the detector can see is
+#: alarming. The form posts nowhere (the inputs are readonly), the host carries
+#: no confusable, and the tokens are ordinary. All the evidence lives in the
+#: relationship between the title and the domain, which the reviewer resolves
+#: and the detector has no feature for.
+_QUIET_FEATURES = {
+    "external_form_action_count": 0.0,
+    "suspicious_token_count": 0.0,
+    "password_input_count": 0.0,
+    "title_domain_token_overlap": 0.0,
+}
+
+
+def _evidence() -> CrawlEvidence:
+    return CrawlEvidence(
+        target_url="https://not-filimo.example/",
+        final_url="https://not-filimo.example/",
+        status=CrawlStatus.OK,
+        http_status=200,
+    )
+
+
+def test_the_reviewers_concrete_support_is_accepted_as_corroboration() -> None:
+    """The detector used to demand it rediscover risk it has no features for.
+
+    Measured on nine live impersonation pages: every one was resolved by the
+    reviewer as two_pass_phishing_with_concrete_support and reported by the
+    detector as suspicious.
+    """
+    verdict, reasons = Detector._reconcile_agent(
+        _review(["two_pass_phishing_with_concrete_support"]),
+        _QUIET_FEATURES, 0.34, _evidence(),
+    )
+    assert verdict is Verdict.PHISHING
+    assert "agent_advisory_phishing_corroborated" in reasons
+
+
+def test_a_phishing_call_without_concrete_support_still_abstains() -> None:
+    """Only the reviewer's evidence-backed finding carries this weight.
+
+    Two passes agreeing is a model opinion; the reason code above is only set
+    after a deterministic signal is present as well.
+    """
+    verdict, reasons = Detector._reconcile_agent(
+        _review(["conservative_reconciliation_abstained"]),
+        _QUIET_FEATURES, 0.34, _evidence(),
+    )
+    assert verdict is Verdict.SUSPICIOUS
+    assert "agent_advisory_abstained" in reasons
