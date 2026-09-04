@@ -363,3 +363,53 @@ def test_local_artefacts_are_not_promised_as_a_skipped_download() -> None:
     ]
     assert not said, f"promised to the operator on: {said}"
     assert "checked against the release before use" in SOURCE
+
+
+def test_every_helper_is_defined_before_it_is_called() -> None:
+    """bash resolves a function at the point of call, not at parse time.
+
+    This has bitten three times now — find_local_rag, discover_index and
+    fetch_index were each defined below the code that used them, which fails at
+    runtime with "command not found" and only on the path that reaches it. The
+    check is crude on purpose: it compares first definition against first
+    top-level call for the helpers that questions and steps invoke.
+    """
+    import re
+
+    lines = SOURCE.splitlines()
+    definitions = {}
+    for number, line in enumerate(lines):
+        match = re.match(r"^([a-z_]+)\(\) \{", line)
+        if match:
+            definitions.setdefault(match.group(1), number)
+
+    watched = {
+        "fetch_index", "fetch_asset", "resolve_asset", "adopt_local",
+        "find_local_rag", "host_memory_gb", "discover_index", "ask",
+        "ask_secret", "say", "set_env", "env_value", "generate_key",
+        "human_size", "asset_url", "prompt_for_asset", "prompt_for_credentials",
+        "check_openrouter", "die", "step",
+    }
+    problems = []
+    for number, line in enumerate(lines):
+        if line.startswith((" ", "\t", "#")) or not line.strip():
+            continue
+        if re.match(r"^[a-z_]+\(\) \{", line):
+            continue
+        for name in watched:
+            if re.search(rf"(?<![\w-]){re.escape(name)}\b", line) and name in definitions:
+                if number < definitions[name]:
+                    problems.append(f"line {number+1} calls {name}, defined at {definitions[name]+1}")
+    assert not problems, "called before definition:\n" + "\n".join(problems)
+
+
+def test_the_index_can_be_downloaded_rather_than_only_pointed_at() -> None:
+    """It used to be undistributable, so enabling references was impossible for
+    anyone who had not built the index themselves."""
+    assert "fetch_index()" in SOURCE
+    assert "embedding-index-${RAG_VERSION}.tar.gz" in SOURCE
+    assert "block_emb.npy" in SOURCE, "the unpack must be checked for the matrix"
+
+
+def test_a_failed_index_fetch_turns_references_off_rather_than_failing() -> None:
+    assert "the index could not be fetched, so references stay off" in SOURCE
