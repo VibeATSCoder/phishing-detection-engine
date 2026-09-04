@@ -264,3 +264,30 @@ def test_a_file_already_on_disk_is_used_without_a_network() -> None:
     assert "|| resolved=\"\"" in fetch, (
         "a failed lookup must not abort before local files are considered"
     )
+
+
+def test_the_load_step_is_not_silenced() -> None:
+    """Unpacking 1.85 GB of layers is the slowest step in the install.
+
+    With docker load's output sent to /dev/null it printed nothing at all for a
+    minute or more, which is exactly what the silent download looked like before
+    it was fixed — and the operator reported it the same way.
+    """
+    assert "docker load >/dev/null" not in SOURCE, "layer progress is hidden again"
+    assert "unpacking layers" in SOURCE, "the wait should be announced"
+
+
+def test_the_archive_check_is_announced() -> None:
+    """gzip -t on a 699 MB artefact is ten to twenty seconds of nothing."""
+    assert 'echo "  check ${artefact}"' in SOURCE
+
+
+def test_manual_mode_lists_everything_before_asking_for_any_of_it() -> None:
+    """Manual mode exists for someone moving files across from a browser. One
+    link at a time is the wrong shape: they can fetch them together, and need to
+    know how much there is before starting."""
+    assert "These are the files this install needs" in SOURCE
+    assert 'if [ "${SOURCE_MODE}" = "manual" ]; then' in SOURCE
+    plan = SOURCE.index("These are the files this install needs")
+    images = SOURCE.index('step "images"')
+    assert plan < images, "the list has to come before the first request"
