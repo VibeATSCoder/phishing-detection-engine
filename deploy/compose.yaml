@@ -2,14 +2,14 @@ name: persianphish-integrated
 
 services:
   review:
-    image: agentic-phishing-review:1.7.0-integrated
+    image: agentic-phishing-review:1.8.0-integrated
     build:
       context: ${AGENT_REVIEW_CONTEXT:-../../agentic-phishing-review}
       dockerfile: Dockerfile
       target: production
       args:
         INSTALL_BROWSER: "0"
-        APP_VERSION: "1.7.0"
+        APP_VERSION: "1.8.0"
     environment:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY in .env}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-google/gemma-4-31b-it}
@@ -65,12 +65,12 @@ services:
         max-file: "3"
 
   detector:
-    image: phishing-detection-engine:3.3.0-integrated
+    image: phishing-detection-engine:3.4.0-integrated
     build:
       context: ..
       dockerfile: Dockerfile
       args:
-        APP_VERSION: "3.3.0"
+        APP_VERSION: "3.4.0"
     depends_on:
       review:
         condition: service_healthy

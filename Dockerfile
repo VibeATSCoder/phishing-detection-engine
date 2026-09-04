@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-ARG APP_VERSION=3.3.0
+ARG APP_VERSION=3.4.0
 LABEL org.opencontainers.image.title="Phishing Detection Engine" \
       org.opencontainers.image.version=$APP_VERSION \
       org.opencontainers.image.source="https://github.com/VibeATSCoder/phishing-detection-engine"
