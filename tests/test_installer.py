@@ -89,3 +89,57 @@ def test_artefact_dir_does_not_refuse_to_fetch_what_it_was_not_given() -> None:
     assert "or drop --artefact-dir to download it here" not in SOURCE, (
         "the old refuse-and-die branch is back"
     )
+
+
+def test_a_terminal_is_detected_by_opening_it_not_by_stat() -> None:
+    """[ -r /dev/tty ] is true on a host with a console even when this process
+    has no controlling terminal — a systemd unit, a container without -t, a
+    setsid'd CI step. The installer then began asking questions and every prompt
+    failed with "/dev/tty: No such device or address".
+    """
+    assert "exec 3<>/dev/tty" in SOURCE, (
+        "the terminal check must open /dev/tty, not stat it"
+    )
+    assert "[ -r /dev/tty ] && HAVE_TTY=1" not in SOURCE, "the stat-only check is back"
+
+
+def test_generated_secrets_are_not_passed_on_the_command_line() -> None:
+    """/proc/<pid>/cmdline is world readable; /proc/<pid>/environ is not.
+
+    A secret in argv is visible in ps to every user on the host for as long as
+    the write takes.
+    """
+    assert "PPD_SET_KEY=" in SOURCE and "PPD_SET_VALUE=" in SOURCE, (
+        "set_env must pass the key and value through the environment"
+    )
+
+
+def test_the_shared_secret_can_be_generated() -> None:
+    """Nobody types this one, so asking a person to invent it is strictly worse."""
+    assert "generate_key()" in SOURCE
+    assert "openssl rand -hex 32" in SOURCE
+    assert "/dev/urandom" in SOURCE, "there must be a fallback without openssl"
+
+
+def test_the_model_key_is_checked_before_it_is_accepted() -> None:
+    """A wrong key is otherwise found at the first detection, long after the
+    operator has any reason to connect the two events."""
+    assert "check_openrouter()" in SOURCE
+    assert "chat/completions" in SOURCE
+
+
+def test_prompting_can_be_turned_off_for_automation() -> None:
+    assert "--no-prompt" in SOURCE
+    assert 'NO_PROMPT:-0' in SOURCE
+
+
+def test_secrets_are_read_without_echo() -> None:
+    assert "ask_secret()" in SOURCE
+    assert "read -rs reply" in SOURCE, "a key must not land in the terminal scrollback"
+
+
+def test_the_virustotal_key_is_described_as_the_monitor_s() -> None:
+    """Collected here for convenience, but neither service started here reads
+    it. Saying so beats implying the detector will start using it."""
+    assert "VIRUSTOTAL_API_KEY" in SOURCE
+    assert "neither service started here reads it" in SOURCE

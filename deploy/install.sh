@@ -11,6 +11,15 @@
 #   bash install.sh --download-only      fetch and load, do not start
 #   bash install.sh --dir ~/somewhere    install somewhere other than ./persianphish
 #   bash install.sh --recheck            re-verify sizes of files already present
+#   bash install.sh --no-prompt          never ask; write the template and stop
+#
+# With a terminal available it asks for what the services need and writes
+# deploy/.env for you: the model endpoint and key (checked against the provider
+# before it is accepted), a generated shared secret for the detector-to-reviewer
+# call, an optional key on the detector itself, and an optional VirusTotal key
+# for the intelligence monitor. Nothing has to be edited by hand. Without a
+# terminal, or with --no-prompt, it writes the template and reports what is
+# missing exactly as before, so CI is unaffected.
 #
 # If you already downloaded the release files by hand, or you want to, run it
 # interactively and pick how the images should be provided:
@@ -85,12 +94,13 @@ while [ $# -gt 0 ]; do
     --with-references|--full) WITH_REFERENCES=1; shift ;;
     --download-only) DOWNLOAD_ONLY=1; shift ;;
     --recheck) RECHECK=1; shift ;;
+    --no-prompt) NO_PROMPT=1; shift ;;
     -i|--interactive) INTERACTIVE=1; shift ;;
     --manual) SOURCE_MODE="manual"; shift ;;
     --artefact-dir)
       ARTEFACT_DIRS+=("${2:?--artefact-dir needs a path}")
       SOURCE_MODE="local"; shift 2 ;;
-    -h|--help) sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,66p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -102,8 +112,16 @@ step() { echo; echo "== $*"; }
 # Read from the terminal, never from stdin. The documented way to run this is
 # `curl ... | bash`, which hands the script itself to bash on stdin: a plain
 # `read` there consumes the rest of the script instead of waiting for an answer.
+# Opening it is the only honest test. [ -r /dev/tty ] inspects the device node's
+# permission bits, which are satisfied on a machine that has a console even when
+# this process has no controlling terminal — a systemd unit, a container without
+# -t, a setsid'd CI step. That reported a terminal, the installer began asking
+# questions, and every prompt failed with "/dev/tty: No such device or address".
 HAVE_TTY=0
-[ -r /dev/tty ] && HAVE_TTY=1
+if { exec 3<>/dev/tty; } 2>/dev/null; then
+  HAVE_TTY=1
+  exec 3>&-
+fi
 # Returns 1 when the terminal is at end of input. The caller has to act on
 # that: a prompt loop that treats EOF as an empty answer never terminates, it
 # just reprints the question forever at whatever speed the CPU allows.
@@ -132,6 +150,76 @@ human_size() {
 }
 say() { # write to the terminal when there is one, so prompts are not piped away
   if [ "${HAVE_TTY}" -eq 1 ]; then echo "$*" > /dev/tty; else echo "$*"; fi
+}
+
+# Read a value that must not be echoed to the screen or land in scrollback.
+ask_secret() { # prompt -> value on stdout
+  local prompt="$1" reply=""
+  if [ "${HAVE_TTY}" -eq 0 ]; then
+    return 1
+  fi
+  printf '%s' "${prompt}" > /dev/tty
+  if ! IFS= read -rs reply < /dev/tty; then
+    printf '\n' > /dev/tty
+    return 1
+  fi
+  printf '\n' > /dev/tty
+  printf '%s' "${reply}"
+}
+
+# A shared secret between the detector and the reviewer. It is never typed by a
+# person and never leaves the host, so generating it is strictly better than
+# asking someone to invent one.
+generate_key() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex 32
+  else
+    head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'
+  fi
+}
+
+# Set a key in deploy/.env, replacing any existing definition.
+#
+# Done in python rather than sed because these are secrets: a key can contain
+# any byte, including the sed delimiter and backreference characters, and a
+# mangled value here fails at first request rather than at write time.
+# Passed through the environment rather than argv on purpose: /proc/<pid>/cmdline
+# is world readable, so a key on the command line is visible in ps to every user
+# on the host for as long as the write takes. /proc/<pid>/environ is not.
+set_env() { # key value
+  PPD_SET_KEY="$1" PPD_SET_VALUE="$2" python3 - <<'PY'
+import os, pathlib
+key, value = os.environ["PPD_SET_KEY"], os.environ["PPD_SET_VALUE"]
+path = pathlib.Path("deploy/.env")
+lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+out, replaced = [], False
+for line in lines:
+    if line.lstrip().startswith(f"{key}="):
+        if not replaced:
+            out.append(f"{key}={value}")
+            replaced = True
+        continue
+    out.append(line)
+if not replaced:
+    out.append(f"{key}={value}")
+path.write_text("\n".join(out).rstrip("\n") + "\n", encoding="utf-8")
+PY
+}
+
+env_value() { # key -> current value in deploy/.env
+  sed -n "s/^$1=//p" deploy/.env 2>/dev/null | tail -n 1
+}
+
+# Confirm the key and endpoint actually work before the install claims success.
+# A wrong key is otherwise discovered at the first detection, by which point the
+# operator has no reason to connect the two.
+check_openrouter() { # key base_url model -> 0 if a completion comes back
+  local key="$1" base="$2" model="$3" body
+  body="$(curl -s --max-time 30 "${base%/}/chat/completions" \
+      -H "Authorization: Bearer ${key}" -H "Content-Type: application/json" \
+      -d "{\"model\":\"${model}\",\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}],\"max_tokens\":1}" \
+    2>/dev/null)" || return 1
+  printf '%s' "${body}" | grep -q '"choices"'
 }
 
 # The link an operator would click. Public releases serve this directly; for a
@@ -601,6 +689,132 @@ if [ ! -f deploy/.env ]; then
   echo "  wrote deploy/.env"
 else
   echo "  keeping the existing deploy/.env"
+fi
+
+# Collect what the services need, rather than leaving an operator to discover
+# which of twenty keys in a template are the two that actually matter. Only when
+# there is a terminal to ask on: the piped one-line install still reaches one,
+# because a pipe replaces stdin and leaves /dev/tty alone, but CI does not and
+# must fall through to the template exactly as before.
+if [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ]; then
+  say "Answer these and deploy/.env is written for you. Ctrl-C to stop and edit"
+  say "it by hand instead; anything already set is offered as the default."
+
+  # --- OpenRouter endpoint --------------------------------------------------
+  current_base="$(env_value OPENROUTER_BASE_URL)"
+  current_base="${current_base:-https://openrouter.ai/api/v1}"
+  say ""
+  say "The review agent's language model provider."
+  say "  1) https://openrouter.ai/api/v1        OpenRouter (default)"
+  say "  2) https://api.openai.com/v1           OpenAI-compatible endpoint"
+  say "  3) something else — a gateway or proxy you run"
+  case "$(ask '  choice [1]: ' 1)" in
+    2) base_url="https://api.openai.com/v1" ;;
+    3) base_url="$(ask '  base URL: ' "${current_base}")" ;;
+    *) base_url="https://openrouter.ai/api/v1" ;;
+  esac
+  set_env OPENROUTER_BASE_URL "${base_url}"
+
+  # --- model ---------------------------------------------------------------
+  current_model="$(env_value OPENROUTER_MODEL)"
+  current_model="${current_model:-google/gemma-4-31b-it}"
+  model="$(ask "  model [${current_model}]: " "${current_model}")"
+  set_env OPENROUTER_MODEL "${model}"
+
+  # --- API key, verified before it is accepted ------------------------------
+  existing_key="$(env_value OPENROUTER_API_KEY)"
+  while :; do
+    if [ -n "${existing_key//[[:space:]]/}" ]; then
+      say ""
+      say "  an API key is already set for ${base_url}"
+      case "$(ask '  keep it? [Y/n]: ' y)" in
+        n|N|no|NO) : ;;
+        *) api_key="${existing_key}" ;;
+      esac
+    fi
+    if [ -z "${api_key:-}" ]; then
+      say ""
+      api_key="$(ask_secret '  API key (not shown as you type): ')" || api_key=""
+    fi
+    if [ -z "${api_key//[[:space:]]/}" ]; then
+      say "  a key is required for the review agent to work"
+      case "$(ask '  try again? [Y/n]: ' y)" in
+        n|N|no|NO) api_key=""; break ;;
+      esac
+      existing_key=""; continue
+    fi
+    say "  checking the key against ${base_url} ..."
+    if check_openrouter "${api_key}" "${base_url}" "${model}"; then
+      say "  the key works"
+      break
+    fi
+    say "  that key did not return a completion — it may be wrong, out of"
+    say "  credit, or the model name may not exist on this endpoint"
+    case "$(ask '  use it anyway? [y/N]: ' n)" in
+      y|Y|yes|YES) break ;;
+    esac
+    api_key=""; existing_key=""
+  done
+  [ -n "${api_key:-}" ] && set_env OPENROUTER_API_KEY "${api_key}"
+
+  # --- internal shared secret ----------------------------------------------
+  existing_review="$(env_value INTERNAL_REVIEW_API_KEY)"
+  say ""
+  say "The detector authenticates to the reviewer with a shared secret. Nobody"
+  say "types this one, so generating it is the better answer."
+  if [ -n "${existing_review//[[:space:]]/}" ]; then
+    say "  one is already set"
+    case "$(ask '  keep it? [Y/n]: ' y)" in
+      n|N|no|NO) set_env INTERNAL_REVIEW_API_KEY "$(generate_key)"; say "  generated a new one" ;;
+      *) : ;;
+    esac
+  else
+    say "  1) generate one now (recommended)"
+    say "  2) I will supply my own"
+    case "$(ask '  choice [1]: ' 1)" in
+      2) supplied="$(ask_secret '  internal review key: ')" || supplied=""
+         if [ -n "${supplied//[[:space:]]/}" ]; then
+           set_env INTERNAL_REVIEW_API_KEY "${supplied}"
+         else
+           set_env INTERNAL_REVIEW_API_KEY "$(generate_key)"; say "  empty, so generated one instead"
+         fi ;;
+      *) set_env INTERNAL_REVIEW_API_KEY "$(generate_key)"; say "  generated" ;;
+    esac
+  fi
+
+  # --- optional detector key ------------------------------------------------
+  say ""
+  say "An API key on the detector itself is optional: it is published only on"
+  say "127.0.0.1, so an empty value is a reasonable choice on a single host."
+  say "  1) leave it open (default)"
+  say "  2) generate one"
+  say "  3) I will supply my own"
+  case "$(ask '  choice [1]: ' 1)" in
+    2) ppd_key="$(generate_key)"; set_env PPD_API_KEY "${ppd_key}"
+       say "  generated — send it as the X-API-Key header" ;;
+    3) supplied="$(ask_secret '  detector API key: ')" || supplied=""
+       [ -n "${supplied//[[:space:]]/}" ] && set_env PPD_API_KEY "${supplied}" ;;
+    *) set_env PPD_API_KEY "" ;;
+  esac
+
+  # --- VirusTotal -----------------------------------------------------------
+  # Collected here because this is where an operator sets the stack up, but it
+  # belongs to the intelligence monitor rather than to either service started
+  # below. Saying so is better than implying the detector will start using it.
+  say ""
+  say "VirusTotal API key — optional. The intelligence monitor uses it to"
+  say "corroborate candidate domains; neither service started here reads it."
+  say "Press Enter to skip."
+  vt_key="$(ask_secret '  VirusTotal API key: ')" || vt_key=""
+  if [ -n "${vt_key//[[:space:]]/}" ]; then
+    set_env VIRUSTOTAL_API_KEY "${vt_key}"
+    set_env VT_BASE_URL "https://www.virustotal.com/api/v3"
+    say "  saved for the monitor"
+  fi
+
+  unset api_key existing_key existing_review supplied vt_key ppd_key
+  say ""
+  say "  deploy/.env written"
 fi
 
 missing=""
