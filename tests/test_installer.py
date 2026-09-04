@@ -202,3 +202,65 @@ def test_a_user_outside_the_docker_group_is_handled() -> None:
     assert "usermod -aG docker" in SOURCE
     assert "docker() { sudo docker" in SOURCE, "later calls need to pick up sudo"
     assert "sg docker -c" in SOURCE, "deploy.sh runs in a separate shell"
+
+
+def test_the_download_shows_progress() -> None:
+    """curl draws its progress bar on stderr.
+
+    The old shape tried the public URL first and sent stderr to /dev/null to
+    hide the 404 that a private repository answers with — which threw the
+    progress bar away with it. A 699 MB transfer then printed nothing for
+    minutes and read as a hang.
+    """
+    transfer = [
+        line for line in SOURCE.splitlines() if "--progress-bar" in line
+    ]
+    assert transfer, "the transfer no longer asks for a progress bar"
+    body = SOURCE.split("# stderr is deliberately not redirected", 1)
+    assert len(body) == 2, "the reason stderr is kept must stay documented"
+    following = body[1].split("\n\n", 1)[0]
+    assert "2>/dev/null" not in following, "progress is being discarded again"
+
+
+def test_the_source_is_resolved_before_the_transfer_starts() -> None:
+    """So the transfer itself can be noisy without leaking probe failures."""
+    assert "resolve_asset()" in SOURCE
+    assert SOURCE.index("resolve_asset()") < SOURCE.index("fetch_asset()")
+
+
+def test_every_network_call_is_bounded() -> None:
+    """An unreachable host must fail, not hang — which looks like the same bug."""
+    offenders = []
+    for number, line in enumerate(SOURCE.splitlines(), 1):
+        stripped = line.strip()
+        if not stripped.startswith("curl ") and "$(curl " not in stripped:
+            continue
+        if stripped.startswith("#"):
+            continue
+        if "connect-timeout" in stripped or "--max-time" in stripped:
+            continue
+        offenders.append(f"{number}: {stripped[:70]}")
+    assert not offenders, "unbounded curl calls:\n" + "\n".join(offenders)
+
+
+def test_a_private_repository_asks_for_a_token() -> None:
+    """A fresh host has no credentials, and dying with "set GITHUB_TOKEN and
+    start over" wastes everything already downloaded."""
+    assert "prompt_for_credentials()" in SOURCE
+    assert "github.com/settings/tokens" in SOURCE
+
+
+def test_the_image_source_is_offered_without_being_asked_for() -> None:
+    """`curl | bash` has a terminal — a pipe replaces stdin, not /dev/tty — so
+    the ordinary reader should be offered local files rather than watching a
+    699 MB download begin."""
+    assert '[ "${SOURCE_MODE}" = "auto" ]' in SOURCE
+
+
+def test_a_file_already_on_disk_is_used_without_a_network() -> None:
+    """--artefact-dir exists for hosts that cannot reach GitHub at all."""
+    fetch = SOURCE.split("fetch_asset() {", 1)[1].split("\n}", 1)[0]
+    assert fetch.index("resolved=\"$(resolve_asset") < fetch.index("adopt_local")
+    assert "|| resolved=\"\"" in fetch, (
+        "a failed lookup must not abort before local files are considered"
+    )

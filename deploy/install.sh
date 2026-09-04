@@ -434,7 +434,7 @@ install_docker() {
   esac
   local script
   script="$(mktemp)" || return 1
-  curl -fsSL https://get.docker.com -o "${script}" || { rm -f "${script}"; return 1; }
+  curl -fsSL --connect-timeout 15 --max-time 120 https://get.docker.com -o "${script}" || { rm -f "${script}"; return 1; }
   ${SUDO} sh "${script}"
   local status=$?
   rm -f "${script}"
@@ -538,11 +538,19 @@ Install it with:  https://docs.docker.com/compose/install/linux/"
 fi
 
 # ----------------------------------------------------- interactive choices ---
-# Only when asked for, and only with a terminal to ask on: the one-line install
-# has to stay non-interactive, and piping this script to bash leaves no tty.
-if [ "${INTERACTIVE}" -eq 1 ]; then
-  [ "${HAVE_TTY}" -eq 1 ] \
-    || die "-i needs a terminal. Download install.sh and run it directly rather than piping it to bash."
+# Asked by default whenever there is a terminal to ask on, which the one-line
+# install does have: piping the script to bash replaces stdin and leaves
+# /dev/tty alone. It used to require -i, so the ordinary `curl | bash` reader was
+# never offered the choice and simply watched a 699 MB download start without
+# being told it could point at files it already had.
+#
+# Skipped when the answer is already on the command line, and skipped entirely
+# without a terminal or under --no-prompt, so automation is unchanged.
+if [ "${INTERACTIVE}" -eq 1 ] && [ "${HAVE_TTY}" -eq 0 ]; then
+  die "-i needs a terminal. Download install.sh and run it directly rather than piping it to bash."
+fi
+if [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ] \
+   && { [ "${INTERACTIVE}" -eq 1 ] || [ "${SOURCE_MODE}" = "auto" ]; }; then
   say ""
   say "How should the images be provided?"
   say "  1) Download them now from the GitHub releases   (default)"
@@ -570,7 +578,7 @@ if [ "${INTERACTIVE}" -eq 1 ]; then
     done
   fi
 
-  if [ "${WITH_REFERENCES}" -eq 0 ]; then
+  if [ "${WITH_REFERENCES}" -eq 0 ] && [ "${INTERACTIVE}" -eq 1 ]; then
     say ""
     say "Include the reference retrieval service? It improves the reviewer's"
     say "judgement but adds 2.9 GB to download and needs 8 GB of memory to run."
@@ -681,51 +689,100 @@ if [ -n "${free_gb}" ] && [ "${free_gb}" -lt "${need_gb}" ]; then
 fi
 
 # ------------------------------------------------------------ downloading ---
-# The size the release says an asset should be, so a partial or stale file is
-# detected without needing a checksum. Empty when it cannot be determined.
-remote_size() { # repo tag name
-  local repo="$1" tag="$2" name="$3" size="" headers
+# Ask for a token when a private repository turns out to need one.
+#
+# Credentials are discovered automatically where a machine already has them, but
+# a fresh host has none, and the install then died on the first private asset
+# with an instruction to set an environment variable and start over. Asking
+# costs one prompt and saves the whole run.
+CREDENTIALS_PROMPTED=0
+prompt_for_credentials() { # repo
+  local repo="$1" token=""
+  [ "${CREDENTIALS_PROMPTED}" -eq 0 ] || return 1
+  CREDENTIALS_PROMPTED=1
+  [ "${HAVE_TTY}" -eq 1 ] || return 1
+  [ "${NO_PROMPT:-0}" != "1" ] || return 1
+  say ""
+  say "${OWNER}/${repo} is private, so this download needs a GitHub token."
+  say "Create one at https://github.com/settings/tokens with 'repo' scope."
+  say "Leave it empty to stop here instead."
+  token="$(ask_secret '  GitHub token: ')" || token=""
+  [ -n "${token//[[:space:]]/}" ] || return 1
+  GITHUB_TOKEN="${token}"
+  AUTH=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+  say "  using it for the rest of this install"
+  return 0
+}
+
+# Where an asset can actually be fetched from, and how big it should be.
+#
+# Printed as "<url>|<size>", size empty when it cannot be determined. Deciding
+# the source *before* transferring is what lets the transfer show progress: the
+# old shape tried the public URL first and threw its stderr away to hide the 404
+# that a private repository answers with, which discarded curl's progress bar
+# along with it. A 699 MB download then printed nothing at all for minutes and
+# looked like a hang.
+resolve_asset() { # repo tag name -> "url|size"
+  local repo="$1" tag="$2" name="$3" headers size url id
+  size_of() { printf '%s' "$1" | tr -d '\r' \
+    | awk 'BEGIN{IGNORECASE=1} /^content-length:/ {n=$2} END{print n}'; }
+
   if [ -n "${ASSET_BASE_URL:-}" ]; then
-    if headers="$(curl -fsIL --retry 3 --retry-all-errors \
-                    "${ASSET_BASE_URL%/}/${name}" 2>/dev/null)"; then
-      printf '%s' "$(printf '%s' "${headers}" | tr -d '\r' \
-              | awk 'BEGIN{IGNORECASE=1} /^content-length:/ {n=$2} END{print n}')"
+    url="${ASSET_BASE_URL%/}/${name}"
+    if headers="$(curl -fsIL --connect-timeout 10 --max-time 30 --retry 2 --retry-all-errors "${url}" 2>/dev/null)"; then
+      printf '%s|%s' "${url}" "$(size_of "${headers}")"
       return 0
     fi
+    echo "    not on the mirror; falling back to GitHub" >&2
+  fi
+
+  url="https://github.com/${OWNER}/${repo}/releases/download/${tag}/${name}"
+  if headers="$(curl -fsIL --connect-timeout 10 --max-time 30 --retry 2 --retry-all-errors "${url}" 2>/dev/null)"; then
+    printf '%s|%s' "${url}" "$(size_of "${headers}")"
     return 0
   fi
-  # The success of the request has to gate the parse. A private asset answers
-  # 404 with a nine-byte "Not Found" body, and its headers still reach stdout
-  # before curl exits non-zero, so reading them unconditionally yields an
-  # expected size of 9 and fails the check on a perfectly good download.
-  if headers="$(curl -fsIL --retry 3 --retry-all-errors \
-                  "https://github.com/${OWNER}/${repo}/releases/download/${tag}/${name}" 2>/dev/null)"; then
-    size="$(printf '%s' "${headers}" | tr -d '\r' \
-            | awk 'BEGIN{IGNORECASE=1} /^content-length:/ {n=$2} END{print n}')"
-  fi
-  if [ -z "${size}" ] && [ ${#AUTH[@]} -gt 0 ]; then
-    size="$(curl -fsSL "${AUTH[@]}" -H "Accept: application/vnd.github+json" \
+
+  # A private asset cannot be taken from the browser download URL: that path
+  # wants a session cookie and answers 404 for a token, which reads like the
+  # file is missing. It has to be resolved to an asset id and pulled from the
+  # API instead.
+  if [ ${#AUTH[@]} -gt 0 ]; then
+    local meta
+    meta="$(curl -fsSL --connect-timeout 10 --max-time 60 "${AUTH[@]}" -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${OWNER}/${repo}/releases/tags/${tag}" 2>/dev/null \
             | python3 -c "
 import json,sys
 want = sys.argv[1]
-for asset in json.load(sys.stdin).get('assets', []):
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    raise SystemExit
+for asset in data.get('assets', []):
     if asset['name'] == want:
-        print(asset['size']); break
+        print(f\"{asset['id']}|{asset['size']}\"); break
 " "${name}" 2>/dev/null || true)"
+    if [ -n "${meta}" ]; then
+      id="${meta%%|*}"
+      printf '%s|%s' "https://api.github.com/repos/${OWNER}/${repo}/releases/assets/${id}" "${meta##*|}"
+      return 0
+    fi
   fi
-  printf '%s' "${size}"
+  return 1
 }
 
 # Fetch one release asset by name, resuming a partial file.
-#
-# A private asset cannot be taken from the browser download URL: that path wants
-# a session cookie and answers 404 for a token, which reads like the file is
-# missing. It has to be resolved to an asset id and pulled from the API. The
-# public URL is tried first because it needs no credentials at all.
 fetch_asset() { # repo tag name
-  local repo="$1" tag="$2" name="$3" expected local_size id
-  expected="$(remote_size "${repo}" "${tag}" "${name}")"
+  local repo="$1" tag="$2" name="$3" resolved url expected local_size
+  local headers=()
+
+  # Ask where it lives, but do not insist yet. An operator who already has the
+  # file — the whole point of --artefact-dir and --manual — may be on a host
+  # with no route to GitHub at all, and failing here would refuse to use a file
+  # sitting right there.
+  resolved="$(resolve_asset "${repo}" "${tag}" "${name}")" || resolved=""
+  url="${resolved%%|*}"
+  expected="${resolved##*|}"
+  [ -n "${resolved}" ] || { url=""; expected=""; }
 
   if [ -f "${name}" ]; then
     local_size="$(stat -c%s "${name}" 2>/dev/null || echo 0)"
@@ -737,74 +794,48 @@ fetch_asset() { # repo tag name
       echo "  have  ${name} (size unverified)"
       return 0
     fi
-    echo "  resume ${name} (${local_size} of ${expected:-?} bytes)"
+    echo "  resume ${name} — $(human_size "${local_size}") of $(human_size "${expected}") already here"
   else
-    # A file the operator already fetched, wherever they put it. Checked before
-    # any request so --artefact-dir never re-downloads what it was given, and so
-    # manual mode only asks for what is genuinely absent.
     adopt_local "${name}" "${expected}" && return 0
     if [ "${SOURCE_MODE}" = "manual" ]; then
-      # Returns non-zero only when the operator asked for it to be downloaded
-      # after all, which falls through to the normal path below.
       prompt_for_asset "${repo}" "${tag}" "${name}" "${expected}" && return 0
     elif [ "${SOURCE_MODE}" = "local" ]; then
-      # Not a failure. --artefact-dir says where the files already are, not that
-      # nothing may ever be downloaded: refusing outright meant an operator who
-      # had both images on disk was still stopped dead by the 15 KB bundle of
-      # compose files, and told to go and fetch it by hand. Use what is there,
-      # fetch what is not, and say which is happening. --manual is the mode for
-      # an operator who wants to be asked before anything is downloaded.
       echo "  ${name} is not in the directories given; fetching it"
     fi
-    echo "  get   ${name}${expected:+ ($(human_size "${expected}"))}"
   fi
 
-  # A mirror, when the deployment network reaches one faster than it reaches
-  # GitHub. Measured from a machine with ordinary connectivity, GitHub sustains
-  # ~2.6 MB/s and Cloudflare's own speed test ~3.1 MB/s, so mirroring buys
-  # nothing there and is not the default. It matters where GitHub is throttled
-  # or blocked, which is exactly where this stack tends to be deployed.
-  #
-  # Plain HTTP GET by filename, so anything serves it: nginx, S3, a bucket
-  # behind a CDN, or `python3 -m http.server` in the directory. Falls through to
-  # GitHub when the mirror does not have the file, so a partial mirror is fine.
-  if [ -n "${ASSET_BASE_URL:-}" ]; then
-    if curl -fL -C - --retry 10 --retry-delay 5 --retry-all-errors --progress-bar \
-         -o "${name}" "${ASSET_BASE_URL%/}/${name}" 2>/dev/null; then
-      echo "    from ${ASSET_BASE_URL%/}"
-      if [ -n "${expected}" ]; then
-        local_size="$(stat -c%s "${name}" 2>/dev/null || echo 0)"
-        [ "${local_size}" = "${expected}" ] \
-          || die "${name} is ${local_size} bytes but the mirror said ${expected}"
-      fi
-      return 0
+  # Only now does a source actually have to exist.
+  if [ -z "${url}" ]; then
+    if [ ${#AUTH[@]} -eq 0 ]; then
+      prompt_for_credentials "${repo}" || true
+      resolved="$(resolve_asset "${repo}" "${tag}" "${name}")" || resolved=""
+      url="${resolved%%|*}"
+      expected="${resolved##*|}"
+      [ -n "${resolved}" ] || { url=""; expected=""; }
     fi
-    echo "    not on the mirror; falling back to GitHub" >&2
+    [ -n "${url}" ] || die "cannot fetch ${name} from ${OWNER}/${repo}.
+The repository is private and no usable credentials were given. Either make it
+public, or set GITHUB_TOKEN and run again. If you already have the file, pass
+--artefact-dir with the directory holding it."
+  fi
+  case "${url}" in
+    https://api.github.com/*) headers=("${AUTH[@]}" -H "Accept: application/octet-stream") ;;
+  esac
+
+  if [ ! -f "${name}" ]; then
+    echo "  get   ${name}${expected:+ — $(human_size "${expected}")}"
+    case "${url}" in
+      https://api.github.com/*) echo "        from the GitHub release (authenticated)" ;;
+      https://github.com/*)     echo "        from the GitHub release" ;;
+      *)                        echo "        from ${url%/*}" ;;
+    esac
   fi
 
-  if curl -fL -C - --retry 10 --retry-delay 5 --retry-all-errors --progress-bar \
-       -o "${name}" \
-       "https://github.com/${OWNER}/${repo}/releases/download/${tag}/${name}" 2>/dev/null; then
-    :
-  elif [ ${#AUTH[@]} -eq 0 ]; then
-    die "cannot fetch ${name}: ${OWNER}/${repo} is not public and no credentials were given.
-Set GITHUB_TOKEN (optionally with GITHUB_USER) and run again."
-  else
-    id="$(curl -fsSL "${AUTH[@]}" -H "Accept: application/vnd.github+json" \
-          "https://api.github.com/repos/${OWNER}/${repo}/releases/tags/${tag}" \
-        | python3 -c "
-import json,sys
-want = sys.argv[1]
-for asset in json.load(sys.stdin).get('assets', []):
-    if asset['name'] == want:
-        print(asset['id']); break
-" "${name}")"
-    [ -n "${id}" ] || die "no asset named ${name} in ${OWNER}/${repo} ${tag}"
-    curl -fL -C - --retry 10 --retry-delay 5 --retry-all-errors --progress-bar \
-      "${AUTH[@]}" -H "Accept: application/octet-stream" -o "${name}" \
-      "https://api.github.com/repos/${OWNER}/${repo}/releases/assets/${id}" \
-      || die "download of ${name} failed"
-  fi
+  # stderr is deliberately not redirected: that is where curl draws the progress
+  # bar, and the operator needs to see a multi-hundred-megabyte transfer moving.
+  curl -fL -C - --connect-timeout 20 --retry 10 --retry-delay 5 --retry-all-errors --progress-bar \
+    ${headers[@]+"${headers[@]}"} -o "${name}" "${url}" \
+    || die "download of ${name} failed. Re-run to resume from where it stopped."
 
   if [ -n "${expected}" ]; then
     local_size="$(stat -c%s "${name}" 2>/dev/null || echo 0)"
@@ -872,7 +903,8 @@ mkdir -p deploy
 # Always take these from main: a fix landed after the release still reaches the
 # operator, and the bundle's copies are only a fallback for an offline install.
 for f in deploy/deploy.sh deploy/compose.images.yaml deploy/compose.references.yaml; do
-  if curl -fsSL --retry 3 --retry-all-errors -o "${f}.new" "${RAW}/${f}" 2>/dev/null; then
+  if curl -fsSL --connect-timeout 10 --max-time 30 --retry 2 --retry-all-errors \
+       -o "${f}.new" "${RAW}/${f}" 2>/dev/null; then
     mv "${f}.new" "${f}"
   else
     rm -f "${f}.new"
@@ -908,7 +940,8 @@ discover_index() {
 
 step "configuration"
 if [ ! -f deploy/.env ]; then
-  curl -fsSL --retry 3 -o deploy/.env "${RAW}/deploy/stack.env.example" 2>/dev/null \
+  curl -fsSL --connect-timeout 10 --max-time 30 --retry 2 \
+       -o deploy/.env "${RAW}/deploy/stack.env.example" 2>/dev/null \
     || cp .env.example deploy/.env 2>/dev/null \
     || die "no configuration template available"
   echo "  wrote deploy/.env"
