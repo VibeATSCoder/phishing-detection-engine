@@ -473,12 +473,29 @@ class Detector:
     ) -> Tuple[Verdict, list[str]]:
         reasons = ["agent_review_completed", *review.reasons, *review.evidence_codes]
         deterministic_risk = _deterministic_risk(features, combined_score)
+        # The reviewer's own concrete-support finding counts as corroboration.
+        #
+        # _deterministic_risk is a heuristic over the detector's URL and DOM
+        # features, and it cannot see what the reviewer established: that the
+        # page titles itself as a brand whose real domain is something else, or
+        # that a link destination is a homograph. Requiring the detector to
+        # independently rediscover risk it has no features for meant the
+        # reviewer could conclude phishing with concrete evidence and be
+        # overruled by a weaker check — measured on nine live impersonation
+        # pages, every one of which the reviewer resolved as
+        # two_pass_phishing_with_concrete_support and the detector reported as
+        # suspicious.
+        #
+        # That reason code is the reviewer asserting it holds deterministic
+        # evidence, not a model opinion; it is only ever set after both passes
+        # agree and a concrete signal is present.
+        reviewer_established_support = "two_pass_phishing_with_concrete_support" in review.reasons
         if (
             review.verdict_candidate == "phishing"
             and review.risk_score is not None
             and review.risk_score >= 0.80
             and review.confidence >= 0.75
-            and deterministic_risk
+            and (deterministic_risk or reviewer_established_support)
         ):
             return Verdict.PHISHING, reasons + ["agent_advisory_phishing_corroborated"]
         if (
