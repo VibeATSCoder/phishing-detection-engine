@@ -43,7 +43,18 @@ while [ $# -gt 0 ]; do
     --verify) VERIFY_CHECKSUMS=1; shift ;;
     --show-config) SHOW_CONFIG=1; shift ;;
     -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "unknown option: $1" >&2; exit 2 ;;
+    *)
+      # This script is refreshed from main by the installer, so a flag that
+      # exists in the documentation but not in the copy on disk means the copy
+      # is older than the instructions being followed. Saying only "unknown
+      # option" left that as a puzzle.
+      echo "unknown option: $1" >&2
+      echo >&2
+      echo "If you were told this option exists, this copy of deploy.sh is out" >&2
+      echo "of date. Update it in place with:" >&2
+      echo "  curl -fsSL -o \"${BASH_SOURCE[0]}\" \\" >&2
+      echo "    https://raw.githubusercontent.com/VibeATSCoder/phishing-detection-engine/main/deploy/deploy.sh" >&2
+      exit 2 ;;
   esac
 done
 
