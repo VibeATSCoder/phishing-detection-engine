@@ -855,15 +855,62 @@ ensure_image() { # image  repo tag artefact
   fi
   fetch_asset "${repo}" "${tag}" "${artefact}"
   # Catches a truncated or corrupted archive before docker sees it, and says so
-  # in terms of the file rather than an opaque tar error.
+  # in terms of the file rather than an opaque tar error. Announced because on a
+  # 699 MB artefact it is ten to twenty seconds of nothing.
+  echo "  check ${artefact}"
   gzip -t "${artefact}" 2>/dev/null \
     || die "${artefact} is not a valid archive. Delete it and re-run to fetch it again."
-  echo "  load  ${image}"
-  gunzip -c "${artefact}" | docker load >/dev/null \
+  # docker load's own layer progress is left visible. Suppressing it made the
+  # slowest step in the whole install — a minute or more of unpacking 1.85 GB of
+  # layers — completely silent, which is what the download used to look like.
+  echo "  load  ${image} — unpacking layers, this takes a minute"
+  gunzip -c "${artefact}" | docker load \
     || die "docker load of ${artefact} failed"
   docker image inspect "${image}" >/dev/null \
     || die "${artefact} loaded but did not provide ${image}"
 }
+
+# In manual mode, show the whole list before asking for any of it. Being handed
+# one link at a time is the wrong shape for the situation manual mode exists for:
+# somebody moving files across from a browser can fetch them all at once, and
+# needs to know how much there is before they start.
+if [ "${SOURCE_MODE}" = "manual" ]; then
+  say ""
+  say "These are the files this install needs. Download them in your browser"
+  say "into  $(pwd)  and they will be picked up as you go."
+  say ""
+  needed=0
+  if ! docker image inspect "phishing-detection-engine:${DETECTOR_VERSION}" >/dev/null 2>&1 \
+     && [ ! -f "phishing-detection-engine-${DETECTOR_VERSION}.tar.gz" ]; then
+    say "  $(asset_url phishing-detection-engine "v${DETECTOR_VERSION}" \
+          "phishing-detection-engine-${DETECTOR_VERSION}.tar.gz")"
+    needed=$((needed + 1))
+  fi
+  if ! docker image inspect "agentic-phishing-review:${REVIEW_VERSION}" >/dev/null 2>&1 \
+     && [ ! -f "agentic-phishing-review-${REVIEW_VERSION}.tar.gz" ]; then
+    say "  $(asset_url agentic-phishing-review "v${REVIEW_VERSION}" \
+          "agentic-phishing-review-${REVIEW_VERSION}.tar.gz")"
+    needed=$((needed + 1))
+  fi
+  if [ "${WITH_REFERENCES}" -eq 1 ] \
+     && ! docker image inspect "phishing-rag-service:${RAG_VERSION}" >/dev/null 2>&1; then
+    for part in part00 part01 part02 parts.sha256; do
+      [ -f "phishing-rag-service-${RAG_VERSION}.tar.gz.${part}" ] && continue
+      say "  $(asset_url phishing-rag-service "v${RAG_VERSION}" \
+            "phishing-rag-service-${RAG_VERSION}.tar.gz.${part}")"
+      needed=$((needed + 1))
+    done
+  fi
+  if [ "${needed}" -eq 0 ]; then
+    say "  nothing to download — everything is already here or already loaded."
+  else
+    say ""
+    say "  ${needed} file(s). A private repository needs you to be signed in to"
+    say "  GitHub in that browser. Press Enter when you have started them, or"
+    say "  just continue — each one is asked for again in turn."
+    ask '  [Enter] to continue: ' '' >/dev/null || true
+  fi
+fi
 
 step "images"
 ensure_image "phishing-detection-engine:${DETECTOR_VERSION}" \
