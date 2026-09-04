@@ -5,7 +5,7 @@ services:
     # The tag the reviewer's release actually publishes. It used to carry an
     # "-integrated" suffix that no release ever produced, so loading the
     # published artefact left Compose looking for an image that did not exist.
-    image: agentic-phishing-review:${REVIEW_VERSION:-1.5.0}
+    image: agentic-phishing-review:${REVIEW_VERSION:-1.6.0}
     platform: linux/amd64
     # These images are distributed as saved artefacts, never pushed to a
     # registry, so a missing tag should say so rather than attempt a pull.
