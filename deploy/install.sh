@@ -89,7 +89,16 @@ set -euo pipefail
 
 OWNER="${GITHUB_OWNER:-VibeATSCoder}"
 RAW="https://raw.githubusercontent.com/${OWNER}/phishing-detection-engine/main"
-INSTALL_DIR="${PWD}/persianphish"
+# Re-running from inside an existing install should update it, not nest a
+# second one inside it. Someone who has installed once and comes back to pick up
+# a fix naturally runs the command from the directory they are already in, and
+# got /home/you/persianphish/persianphish for it — a second copy that then
+# downloads everything again and leaves the first one stale.
+if [ -f "${PWD}/deploy/compose.images.yaml" ] || [ -f "${PWD}/deploy/.env" ]; then
+  INSTALL_DIR="${PWD}"
+else
+  INSTALL_DIR="${PWD}/persianphish"
+fi
 WITH_REFERENCES=0
 FETCH_INDEX=0
 DOWNLOAD_ONLY=0

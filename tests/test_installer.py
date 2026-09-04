@@ -413,3 +413,13 @@ def test_the_index_can_be_downloaded_rather_than_only_pointed_at() -> None:
 
 def test_a_failed_index_fetch_turns_references_off_rather_than_failing() -> None:
     assert "the index could not be fetched, so references stay off" in SOURCE
+
+
+def test_rerunning_inside_an_install_updates_it_rather_than_nesting() -> None:
+    """Someone picking up a fix runs the command where they already are.
+
+    Reported live as "installing into /home/you/persianphish/persianphish" — a
+    second copy that downloads everything again and leaves the first one stale.
+    """
+    assert '[ -f "${PWD}/deploy/compose.images.yaml" ]' in SOURCE
+    assert 'INSTALL_DIR="${PWD}"' in SOURCE
