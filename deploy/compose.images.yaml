@@ -10,12 +10,19 @@ services:
     # These images are distributed as saved artefacts, never pushed to a
     # registry, so a missing tag should say so rather than attempt a pull.
     pull_policy: never
+    # Read the OpenRouter settings straight from .env into the container.
+    #
+    # They are deliberately NOT repeated under environment: below. Compose
+    # interpolates ${OPENROUTER_*} from the invoking shell first and only then
+    # from --env-file, so a developer machine that exports OPENROUTER_API_KEY /
+    # OPENROUTER_BASE_URL for some other tool (a very common setup) silently
+    # overrode the correct values in .env. The reviewer then pointed at the
+    # wrong endpoint, every LLM call returned 403, and the agent abstained on
+    # everything while all containers still reported healthy. env_file loads the
+    # file directly into the container and is immune to that shell shadowing.
+    env_file:
+      - .env
     environment:
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY in .env}
-      OPENROUTER_MODEL: ${OPENROUTER_MODEL:-google/gemma-4-31b-it}
-      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
-      OPENROUTER_HTTP_REFERER: ${OPENROUTER_HTTP_REFERER:-}
-      OPENROUTER_APP_NAME: ${OPENROUTER_APP_NAME:-PersianPhish Integrated Review}
       REVIEW_API_KEY: ${INTERNAL_REVIEW_API_KEY:?Set INTERNAL_REVIEW_API_KEY in .env}
       REVIEW_DATABASE_PATH: /data/reviews.sqlite3
       REVIEW_USE_BROWSER: "0"

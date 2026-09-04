@@ -93,6 +93,21 @@ for required in OPENROUTER_API_KEY INTERNAL_REVIEW_API_KEY; do
 done
 unset value
 
+# The reviewer reads OpenRouter settings from .env via env_file, which the shell
+# cannot shadow. An older compose file that still interpolates ${OPENROUTER_*}
+# would, though, so warn if the shell exports one that disagrees with .env: it
+# is the difference between the agent working and it silently 403-ing on every
+# call while every container reports healthy.
+for shadow in OPENROUTER_API_KEY OPENROUTER_BASE_URL OPENROUTER_MODEL; do
+  shell_val="$(printenv "${shadow}" || true)"
+  file_val="$(sed -n "s/^${shadow}=//p" .env | tail -n 1)"
+  if [ -n "${shell_val}" ] && [ -n "${file_val}" ] && [ "${shell_val}" != "${file_val}" ]; then
+    echo "warning: ${shadow} is exported in your shell and differs from .env;" >&2
+    echo "         the container uses the .env value. Unset it if the agent misbehaves." >&2
+  fi
+done
+unset shadow shell_val file_val
+
 # Load any image artefact that is present and not already loaded. Verifying the
 # checksum first matters more here than usual: a truncated multi-hundred-megabyte
 # download loads as a corrupt image rather than failing outright.
