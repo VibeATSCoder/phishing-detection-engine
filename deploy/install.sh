@@ -537,6 +537,66 @@ Install it with:  https://docs.docker.com/compose/install/linux/"
   say "  installed"
 fi
 
+# These three are consulted by the questions below, so they have to be
+# defined before them: bash resolves a function at the point of the call,
+# and they used to sit several hundred lines further down.
+# ------------------------------------------------------------ downloading ---
+# What of the retrieval service this machine already has.
+#
+# Prints one of: image | artefacts | none. The 2.9 GB download is the reason
+# most people never enable references, so finding a copy already present is the
+# difference between offering it and not.
+find_local_rag() {
+  if docker image inspect "phishing-rag-service:${RAG_VERSION}" >/dev/null 2>&1; then
+    printf 'image'
+    return 0
+  fi
+  local dir
+  for dir in ${ARTEFACT_DIRS[@]+"${ARTEFACT_DIRS[@]}"} "${PWD}"; do
+    [ -d "${dir}" ] || continue
+    if [ -f "${dir%/}/phishing-rag-service-${RAG_VERSION}.tar.gz.part00" ] \
+       || [ -f "${dir%/}/phishing-rag-service-${RAG_VERSION}.tar.gz" ]; then
+      printf 'artefacts'
+      return 0
+    fi
+  done
+  printf 'none'
+}
+
+# Memory actually available to containers, in GB. The retrieval service memory
+# maps a 3 GB index and answers in 5-7 seconds at 8 GB; at 4 GB it exceeds the
+# reviewer's timeout and the references never arrive, which looks like the
+# service being broken rather than starved.
+host_memory_gb() {
+  local kb
+  kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)"
+  printf '%s' "$((kb / 1024 / 1024))"
+}
+
+# The retrieval service mounts its index from the host rather than carrying it
+# in the image, so --full needs a path that only this machine knows. Look in the
+# places it actually lands before asking the operator for it.
+discover_index() {
+  local candidate
+  for candidate in \
+    "${RAG_INDEX_HOST_PATH:-}" \
+    "${PWD}/Embedding_Index" \
+    "${HOME}/Embedding_Index" \
+    /var/services/idk/Phishing_RAG/Phishing_RAG_S3_Output/Output/Embedding_Index \
+    /data/Embedding_Index \
+    /opt/persianphish/Embedding_Index
+  do
+    [ -n "${candidate}" ] || continue
+    # block_index.parquet is the file the retriever opens first, so its presence
+    # is what makes a directory an index rather than a directory of that name.
+    if [ -f "${candidate}/block_index.parquet" ]; then
+      printf '%s' "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 # ----------------------------------------------------- interactive choices ---
 # Asked by default whenever there is a terminal to ask on, which the one-line
 # install does have: piping the script to bash replaces stdin and leaves
@@ -549,6 +609,7 @@ fi
 if [ "${INTERACTIVE}" -eq 1 ] && [ "${HAVE_TTY}" -eq 0 ]; then
   die "-i needs a terminal. Download install.sh and run it directly rather than piping it to bash."
 fi
+# The source menu is skipped when a flag already answered it.
 if [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ] \
    && { [ "${INTERACTIVE}" -eq 1 ] || [ "${SOURCE_MODE}" = "auto" ]; }; then
   say ""
@@ -578,14 +639,79 @@ if [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ] \
     done
   fi
 
-  if [ "${WITH_REFERENCES}" -eq 0 ] && [ "${INTERACTIVE}" -eq 1 ]; then
-    say ""
-    say "Include the reference retrieval service? It improves the reviewer's"
-    say "judgement but adds 2.9 GB to download and needs 8 GB of memory to run."
-    case "$(ask '  include it? [y/N]: ' n)" in
-      y|Y|yes|YES) WITH_REFERENCES=1 ;;
-    esac
+fi
+
+# Asked whenever there is a terminal, whatever the image source is. It used to
+# live inside the source-menu block, so passing --artefact-dir — the flag for
+# "I already have the images", which is exactly when someone is most likely to
+# have the reference image too — skipped the question entirely.
+if [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ]; then
+# Asked on every interactive run, not only under -i. Gating it behind a flag
+# meant the ordinary one-line install never mentioned references at all, so an
+# operator with the image already sitting on disk was never offered it.
+#
+# The question is shaped by what this machine actually has, because the honest
+# answer differs enormously: loading a copy already present takes a minute,
+# and fetching one is 2.9 GB.
+if [ "${WITH_REFERENCES}" -eq 0 ]; then
+  rag_local="$(find_local_rag)"
+  rag_index="$(discover_index || true)"
+  mem_gb="$(host_memory_gb)"
+  say ""
+  say "The reference retrieval service compares a page against known-good"
+  say "originals. It is what lets the reviewer confirm brand impersonation"
+  say "rather than only suspect it."
+  case "${rag_local}" in
+    image)     say "  the image is already loaded on this machine" ;;
+    # Deliberately not "no download needed": this only sees that files of the
+    # right name are present. Each is still checked against the size the release
+    # reports before it is used, and one that does not match is refused and
+    # fetched instead.
+    artefacts) say "  image artefacts found here — checked against the release before use" ;;
+    none)      say "  not present here: enabling it downloads 2.9 GB" ;;
+  esac
+  if [ -n "${rag_index}" ]; then
+    say "  index found at ${rag_index}"
+  else
+    say "  no index found — it needs the Embedding_Index directory to run"
   fi
+  if [ "${mem_gb}" -gt 0 ] && [ "${mem_gb}" -lt 8 ]; then
+    say "  warning: this host has ${mem_gb} GB of RAM and the service wants 8 GB."
+    say "  Below that its queries exceed the reviewer's timeout and no"
+    say "  references arrive, which looks like a broken service."
+  fi
+  # Default yes only when it costs nothing: already here, and an index to use.
+  if [ "${rag_local}" != "none" ] && [ -n "${rag_index}" ]; then
+    default="y"; prompt='  enable it? [Y/n]: '
+  else
+    default="n"; prompt='  enable it? [y/N]: '
+  fi
+  case "$(ask "${prompt}" "${default}")" in
+    y|Y|yes|YES)
+      WITH_REFERENCES=1
+      if [ -z "${rag_index}" ]; then
+        while :; do
+          answer="$(ask '  path to the Embedding_Index directory (empty to skip): ' '')" \
+            || answer=""
+          answer="${answer/#\~/${HOME}}"
+          if [ -z "${answer//[[:space:]]/}" ]; then
+            say "  no index given, so references stay off"
+            WITH_REFERENCES=0
+            break
+          fi
+          if [ -f "${answer%/}/block_index.parquet" ]; then
+            RAG_INDEX_HOST_PATH="$(cd -- "${answer}" && pwd)"
+            export RAG_INDEX_HOST_PATH
+            say "  using ${RAG_INDEX_HOST_PATH}"
+            break
+          fi
+          say "  that directory has no block_index.parquet in it"
+        done
+      fi ;;
+  esac
+  unset rag_local rag_index mem_gb default prompt answer
+fi
+
   unset answer
 fi
 
@@ -688,7 +814,8 @@ if [ -n "${free_gb}" ] && [ "${free_gb}" -lt "${need_gb}" ]; then
   die "only ${free_gb} GB free here; about ${need_gb} GB is needed$([ "${WITH_REFERENCES}" -eq 1 ] && echo ' with --with-references')"
 fi
 
-# ------------------------------------------------------------ downloading ---
+
+
 # Ask for a token when a private repository turns out to need one.
 #
 # Credentials are discovered automatically where a machine already has them, but
@@ -961,29 +1088,6 @@ done
 [ -f deploy/compose.images.yaml ] || die "deploy/compose.images.yaml is missing"
 chmod +x deploy/deploy.sh
 
-# The retrieval service mounts its index from the host rather than carrying it
-# in the image, so --full needs a path that only this machine knows. Look in the
-# places it actually lands before asking the operator for it.
-discover_index() {
-  local candidate
-  for candidate in \
-    "${RAG_INDEX_HOST_PATH:-}" \
-    "${PWD}/Embedding_Index" \
-    "${HOME}/Embedding_Index" \
-    /var/services/idk/Phishing_RAG/Phishing_RAG_S3_Output/Output/Embedding_Index \
-    /data/Embedding_Index \
-    /opt/persianphish/Embedding_Index
-  do
-    [ -n "${candidate}" ] || continue
-    # block_index.parquet is the file the retriever opens first, so its presence
-    # is what makes a directory an index rather than a directory of that name.
-    if [ -f "${candidate}/block_index.parquet" ]; then
-      printf '%s' "${candidate}"
-      return 0
-    fi
-  done
-  return 1
-}
 
 step "configuration"
 if [ ! -f deploy/.env ]; then
