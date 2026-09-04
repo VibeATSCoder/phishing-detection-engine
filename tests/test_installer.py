@@ -143,3 +143,62 @@ def test_the_virustotal_key_is_described_as_the_monitor_s() -> None:
     it. Saying so beats implying the detector will start using it."""
     assert "VIRUSTOTAL_API_KEY" in SOURCE
     assert "neither service started here reads it" in SOURCE
+
+
+def test_the_script_is_parsed_before_any_of_it_runs() -> None:
+    """`curl | bash` feeds the script in as it arrives.
+
+    Without a wrapping block, a connection that drops mid-transfer leaves bash
+    running whichever half arrived: measured on the previous version, the
+    largest prefix that still parsed was 610 lines, and running it authenticated
+    with the operator's token and created the install directory. It also made a
+    genuine early failure unreadable — bash exiting while curl was still writing
+    produced "curl: (23) Failure writing output to destination" on top of the
+    real message, which reads like a download problem.
+    """
+    body = SOURCE.split("set -euo pipefail", 1)[1]
+    assert body.lstrip().startswith("#") or body.lstrip().startswith("{"), body[:80]
+    assert "\n{\n" in SOURCE, "the executable body must be inside a block"
+    assert SOURCE.rstrip().endswith("}  # end of the parse-before-execute block")
+
+
+def test_no_prefix_of_the_script_is_executable() -> None:
+    """The property the block above exists to provide."""
+    import subprocess
+
+    lines = SOURCE.splitlines()
+    for cut in range(200, len(lines), 50):
+        prefix = "\n".join(lines[:cut])
+        done = subprocess.run(
+            ["bash", "-n"], input=prefix, text=True, capture_output=True
+        )
+        assert done.returncode != 0, f"the first {cut} lines parse and would run"
+
+
+def test_missing_dependencies_are_offered_rather_than_refused() -> None:
+    """A bare "required command missing: docker" is every fresh Debian host."""
+    assert "detect_pm()" in SOURCE
+    for manager in ("apt-get", "dnf", "yum", "zypper", "pacman", "apk"):
+        assert manager in SOURCE, f"{manager} is not handled"
+    assert "get.docker.com" in SOURCE
+
+
+def test_nothing_is_installed_without_asking_or_without_a_terminal() -> None:
+    assert "--no-install" in SOURCE
+    assert "NO_INSTALL:-0" in SOURCE
+    assert "may_install()" in SOURCE
+
+
+def test_declining_an_install_is_not_reported_as_a_failure() -> None:
+    """Returning 2 for "declined" keeps it distinct from "the install broke"."""
+    assert "return 2 ;;   # declined, which is not the same as failed" in SOURCE
+    assert "install_docker || docker_rc=$?" in SOURCE, (
+        "a bare call would be killed by set -e before the case could run"
+    )
+
+
+def test_a_user_outside_the_docker_group_is_handled() -> None:
+    """Group membership does not reach a shell that is already running."""
+    assert "usermod -aG docker" in SOURCE
+    assert "docker() { sudo docker" in SOURCE, "later calls need to pick up sudo"
+    assert "sg docker -c" in SOURCE, "deploy.sh runs in a separate shell"

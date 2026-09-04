@@ -12,6 +12,15 @@
 #   bash install.sh --dir ~/somewhere    install somewhere other than ./persianphish
 #   bash install.sh --recheck            re-verify sizes of files already present
 #   bash install.sh --no-prompt          never ask; write the template and stop
+#   bash install.sh --no-install         never install packages; just report
+#
+# On a host that is missing Docker, curl, python3, tar or gzip, it offers to
+# install them rather than stopping at the first one. Docker comes from the
+# official get.docker.com script, which is the one path that produces the engine
+# and the Compose v2 plugin on every distribution; the smaller tools come from
+# apt, dnf, yum, zypper, pacman or apk. A stopped daemon is started, and a user
+# who cannot reach the socket is offered the docker group. Nothing is installed
+# without asking, and nothing is installed at all without a terminal.
 #
 # With a terminal available it asks for what the services need and writes
 # deploy/.env for you: the model endpoint and key (checked against the provider
@@ -66,6 +75,18 @@
 # rather than fed to docker load.
 set -euo pipefail
 
+# Everything below is inside a block so that bash parses the whole script before
+# it executes a line of it. Two reasons, both seen in practice:
+#
+#   * `curl ... | bash` feeds the script in as it arrives. A die() early in the
+#     file exits while curl is still writing, and curl reports its own failure
+#     over the top of ours: "curl: (23) Failure writing output to destination",
+#     which reads like a download problem rather than the missing dependency it
+#     actually was.
+#   * A connection dropped mid-transfer would otherwise run whichever half of
+#     the script had arrived.
+{
+
 OWNER="${GITHUB_OWNER:-VibeATSCoder}"
 RAW="https://raw.githubusercontent.com/${OWNER}/phishing-detection-engine/main"
 INSTALL_DIR="${PWD}/persianphish"
@@ -95,12 +116,13 @@ while [ $# -gt 0 ]; do
     --download-only) DOWNLOAD_ONLY=1; shift ;;
     --recheck) RECHECK=1; shift ;;
     --no-prompt) NO_PROMPT=1; shift ;;
+    --no-install) NO_INSTALL=1; shift ;;
     -i|--interactive) INTERACTIVE=1; shift ;;
     --manual) SOURCE_MODE="manual"; shift ;;
     --artefact-dir)
       ARTEFACT_DIRS+=("${2:?--artefact-dir needs a path}")
       SOURCE_MODE="local"; shift 2 ;;
-    -h|--help) sed -n '2,66p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,75p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
@@ -304,13 +326,216 @@ Either download it to $(pwd) and run again, or drop --manual to fetch it here."
 }
 
 # ------------------------------------------------------------- preflight ---
-for required in docker curl python3 tar gzip; do
-  command -v "${required}" >/dev/null 2>&1 || die "required command missing: ${required}"
+# A missing dependency used to end the install with one line naming the command
+# and nothing else, which on a fresh Debian or Ubuntu host is every time. Offer
+# to install what is missing instead, and only refuse when that is not possible.
+
+SUDO=""
+if [ "$(id -u)" -ne 0 ]; then
+  if command -v sudo >/dev/null 2>&1; then
+    SUDO="sudo"
+  fi
+fi
+
+detect_pm() {
+  local pm
+  for pm in apt-get dnf yum zypper pacman apk; do
+    if command -v "${pm}" >/dev/null 2>&1; then
+      printf '%s' "${pm}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+pm_install() { # package...
+  local pm="$1"; shift
+  case "${pm}" in
+    apt-get)
+      ${SUDO} env DEBIAN_FRONTEND=noninteractive apt-get update -qq \
+        && ${SUDO} env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$@" ;;
+    dnf)    ${SUDO} dnf install -y -q "$@" ;;
+    yum)    ${SUDO} yum install -y -q "$@" ;;
+    zypper) ${SUDO} zypper --non-interactive install "$@" ;;
+    pacman) ${SUDO} pacman -Sy --noconfirm "$@" ;;
+    apk)    ${SUDO} apk add --no-cache "$@" ;;
+    *) return 1 ;;
+  esac
+}
+
+# The package that provides a command, per manager. Only the names that actually
+# differ are listed; anything absent here is named the same everywhere.
+pkg_for() { # pm command
+  case "$2" in
+    python3) case "$1" in apk) printf 'python3' ;; *) printf 'python3' ;; esac ;;
+    *) printf '%s' "$2" ;;
+  esac
+}
+
+may_install() { # what -> 0 if we are allowed to try
+  if [ "${NO_INSTALL:-0}" = "1" ]; then
+    return 1
+  fi
+  if [ "$(id -u)" -ne 0 ] && [ -z "${SUDO}" ]; then
+    return 1
+  fi
+  if [ "${HAVE_TTY}" -eq 0 ]; then
+    # Unattended: installing packages without being asked is not this script's
+    # decision to make on someone else's machine.
+    return 1
+  fi
+  case "$(ask "  install $1 now? [Y/n]: " y)" in
+    n|N|no|NO) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+PM="$(detect_pm || true)"
+
+# --- the small tools ---------------------------------------------------------
+missing_tools=""
+for required in curl python3 tar gzip; do
+  command -v "${required}" >/dev/null 2>&1 || missing_tools="${missing_tools} ${required}"
 done
-docker compose version >/dev/null 2>&1 \
-  || die "Docker Compose v2 is required (the 'docker compose' command)"
-docker info >/dev/null 2>&1 \
-  || die "cannot talk to the Docker daemon; is it running, and is your user in the docker group?"
+if [ -n "${missing_tools}" ]; then
+  say ""
+  say "Missing:${missing_tools}"
+  if [ -z "${PM}" ]; then
+    die "no supported package manager found; install${missing_tools} and run again"
+  fi
+  packages=""
+  for tool in ${missing_tools}; do
+    packages="${packages} $(pkg_for "${PM}" "${tool}")"
+  done
+  if may_install "them with ${PM}"; then
+    # shellcheck disable=SC2086
+    pm_install "${PM}" ${packages} || die "could not install${missing_tools}"
+  else
+    die "install${missing_tools} and run again"
+  fi
+  for required in ${missing_tools}; do
+    command -v "${required}" >/dev/null 2>&1 \
+      || die "${required} is still missing after the install"
+  done
+  say "  installed"
+fi
+
+# --- docker ------------------------------------------------------------------
+install_docker() {
+  # Docker's own script is the one path that produces the engine *and* the
+  # Compose v2 plugin on every distribution this is likely to meet. Distribution
+  # packages vary: Debian's docker.io ships no compose plugin at all on older
+  # releases, and the plugin package is named differently everywhere.
+  say ""
+  say "  Docker will be installed with the official script from get.docker.com,"
+  say "  which adds Docker's repository and the Compose v2 plugin."
+  case "$(ask '  proceed? [Y/n]: ' y)" in
+    n|N|no|NO) return 2 ;;   # declined, which is not the same as failed
+  esac
+  local script
+  script="$(mktemp)" || return 1
+  curl -fsSL https://get.docker.com -o "${script}" || { rm -f "${script}"; return 1; }
+  ${SUDO} sh "${script}"
+  local status=$?
+  rm -f "${script}"
+  return ${status}
+}
+
+if ! command -v docker >/dev/null 2>&1; then
+  say ""
+  say "Docker is not installed."
+  if [ "${NO_INSTALL:-0}" = "1" ] || { [ "$(id -u)" -ne 0 ] && [ -z "${SUDO}" ]; } \
+     || [ "${HAVE_TTY}" -eq 0 ]; then
+    die "install Docker Engine and Compose v2, then run again:
+  https://docs.docker.com/engine/install/"
+  fi
+  # Captured rather than tested bare: under set -e a non-zero return from a
+  # bare call exits the script instantly, so the case below never ran and the
+  # operator saw the prompt and then nothing at all.
+  docker_rc=0
+  install_docker || docker_rc=$?
+  case ${docker_rc} in
+    0) : ;;
+    2) die "Docker is required. Install it and run this again:
+  https://docs.docker.com/engine/install/" ;;
+    *) die "the Docker install did not finish. Install it by hand and run this
+again:  https://docs.docker.com/engine/install/" ;;
+  esac
+  command -v docker >/dev/null 2>&1 || die "docker is still missing after the install"
+  say "  Docker installed"
+fi
+
+# --- the daemon --------------------------------------------------------------
+start_daemon() {
+  if command -v systemctl >/dev/null 2>&1; then
+    ${SUDO} systemctl enable --now docker >/dev/null 2>&1 && return 0
+  fi
+  if command -v service >/dev/null 2>&1; then
+    ${SUDO} service docker start >/dev/null 2>&1 && return 0
+  fi
+  # WSL and some containers run neither: dockerd has to be started by hand.
+  return 1
+}
+
+if ! docker info >/dev/null 2>&1; then
+  # Two very different causes look identical from here: the daemon is down, or
+  # it is up and this user may not talk to its socket.
+  if [ -n "${SUDO}" ] && ${SUDO} docker info >/dev/null 2>&1; then
+    say ""
+    say "The Docker daemon is running but your user cannot reach its socket."
+    if [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_INSTALL:-0}" != "1" ]; then
+      case "$(ask "  add $(id -un) to the docker group? [Y/n]: " y)" in
+        n|N|no|NO) : ;;
+        *) ${SUDO} usermod -aG docker "$(id -un)" 2>/dev/null \
+             && say "  added — it takes effect at your next login" ;;
+      esac
+    fi
+    # Group membership does not apply to a shell that is already running, so
+    # this run goes through sudo. Overriding the name means every later call in
+    # this script picks it up without threading a variable through all of them;
+    # sudo resolves the binary from PATH, so this does not recurse.
+    say "  using sudo for Docker in this run"
+    docker() { sudo docker "$@"; }
+    DOCKER_NEEDS_SUDO=1
+  else
+    say ""
+    say "The Docker daemon is not responding; trying to start it."
+    if start_daemon && docker info >/dev/null 2>&1; then
+      say "  started"
+    elif [ -n "${SUDO}" ] && ${SUDO} docker info >/dev/null 2>&1; then
+      say "  started; using sudo for Docker in this run"
+      docker() { sudo docker "$@"; }
+      DOCKER_NEEDS_SUDO=1
+    else
+      die "cannot talk to the Docker daemon.
+Start it and run again. On most systems:  sudo systemctl start docker
+Under WSL without systemd:                sudo dockerd &"
+    fi
+  fi
+fi
+DOCKER_NEEDS_SUDO="${DOCKER_NEEDS_SUDO:-0}"
+
+# --- compose v2 --------------------------------------------------------------
+if ! docker compose version >/dev/null 2>&1; then
+  say ""
+  say "Docker is present but the Compose v2 plugin is not."
+  installed=0
+  if [ -n "${PM}" ] && may_install "the Compose plugin with ${PM}"; then
+    case "${PM}" in
+      apt-get) pm_install "${PM}" docker-compose-plugin 2>/dev/null \
+                 || pm_install "${PM}" docker-compose-v2 2>/dev/null || true ;;
+      dnf|yum|zypper) pm_install "${PM}" docker-compose-plugin 2>/dev/null || true ;;
+      pacman)  pm_install "${PM}" docker-compose 2>/dev/null || true ;;
+      apk)     pm_install "${PM}" docker-cli-compose 2>/dev/null || true ;;
+    esac
+    docker compose version >/dev/null 2>&1 && installed=1
+  fi
+  if [ "${installed}" -eq 0 ]; then
+    die "Docker Compose v2 is required (the 'docker compose' command).
+Install it with:  https://docs.docker.com/compose/install/linux/"
+  fi
+  say "  installed"
+fi
 
 # ----------------------------------------------------- interactive choices ---
 # Only when asked for, and only with a terminal to ask on: the one-line install
@@ -841,6 +1066,21 @@ fi
 run_cmd="cd $(pwd) && bash deploy/deploy.sh"
 [ "${WITH_REFERENCES}" -eq 1 ] && run_cmd="${run_cmd} --with-references"
 
+# deploy.sh is a separate process, so the docker() override defined above does
+# not reach it. If this user was just added to the docker group, sg starts a
+# shell with that membership already active — which the current login shell will
+# not have until the operator logs out and back in.
+if [ "${DOCKER_NEEDS_SUDO}" -eq 1 ]; then
+  if command -v sg >/dev/null 2>&1 && id -nG 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
+    run_cmd="sg docker -c \"${run_cmd}\""
+  else
+    say ""
+    say "  Docker needs sudo for this user, so the start below runs under sudo."
+    say "  Log out and back in once and it will not need to again."
+    run_cmd="${SUDO} ${run_cmd}"
+  fi
+fi
+
 if [ -n "${missing}" ] || [ "${DOWNLOAD_ONLY}" -eq 1 ]; then
   echo
   echo "Everything is downloaded and loaded into Docker."
@@ -856,3 +1096,5 @@ fi
 
 step "starting"
 eval "${run_cmd}"
+
+}  # end of the parse-before-execute block
