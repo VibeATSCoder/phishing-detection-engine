@@ -68,6 +68,14 @@ ALLOWED_EVIDENCE_CODES = {
     "high_reference_similarity_domain_mismatch",
     "brand_token_domain_mismatch",
     "suspicious_download_prompt",
+    # Added by the reviewer after this list was written. A code missing here is
+    # not ignored — _bounded_codes rejects the whole agent result with
+    # agent_result_unsupported_code, so the reviewer's entire verdict is thrown
+    # away and the detector reports agent_unavailable. deceptive_link_target
+    # shipped in reviewer 1.6.0 and silently did exactly that on every page it
+    # fired for; tests/test_agent_contract.py now pins the two lists together.
+    "deceptive_link_target",
+    "known_brand_domain_mismatch",
 }
 SENSITIVE_RESULT_KEYS = {
     "html",

@@ -20,8 +20,8 @@
 # Required in .env: OPENROUTER_API_KEY and INTERNAL_REVIEW_API_KEY.
 set -euo pipefail
 
-readonly DETECTOR_VERSION="3.3.0"
-readonly REVIEW_VERSION="1.7.0"
+readonly DETECTOR_VERSION="3.4.0"
+readonly REVIEW_VERSION="1.8.0"
 # Overridable from .env, so --with-references matches the image you loaded.
 RAG_VERSION="1.0.2"
 readonly DETECTOR_IMAGE="phishing-detection-engine:${DETECTOR_VERSION}"
