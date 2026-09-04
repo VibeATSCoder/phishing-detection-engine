@@ -74,3 +74,18 @@ def test_help_mentions_the_manual_download_options() -> None:
     ).stdout
     for expected in ("--artefact-dir", "--manual", "-i"):
         assert expected in help_text, f"--help does not mention {expected}"
+
+
+def test_artefact_dir_does_not_refuse_to_fetch_what_it_was_not_given() -> None:
+    """--artefact-dir says where files are, not that nothing may be downloaded.
+
+    Refusing outright meant an operator holding both image artefacts was still
+    stopped dead by the 15 KB bundle of compose files and told to fetch it by
+    hand. --manual is the mode for being asked before anything is downloaded.
+    """
+    assert "is not in the directories given; fetching it" in SOURCE, (
+        "local mode must fall back to downloading a file it was not given"
+    )
+    assert "or drop --artefact-dir to download it here" not in SOURCE, (
+        "the old refuse-and-die branch is back"
+    )

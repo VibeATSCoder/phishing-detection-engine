@@ -435,10 +435,13 @@ fetch_asset() { # repo tag name
       # after all, which falls through to the normal path below.
       prompt_for_asset "${repo}" "${tag}" "${name}" "${expected}" && return 0
     elif [ "${SOURCE_MODE}" = "local" ]; then
-      die "${name} is not in any of the directories given.
-Download it from
-  $(asset_url "${repo}" "${tag}" "${name}")
-into one of them and run again, or drop --artefact-dir to download it here."
+      # Not a failure. --artefact-dir says where the files already are, not that
+      # nothing may ever be downloaded: refusing outright meant an operator who
+      # had both images on disk was still stopped dead by the 15 KB bundle of
+      # compose files, and told to go and fetch it by hand. Use what is there,
+      # fetch what is not, and say which is happening. --manual is the mode for
+      # an operator who wants to be asked before anything is downloaded.
+      echo "  ${name} is not in the directories given; fetching it"
     fi
     echo "  get   ${name}${expected:+ ($(human_size "${expected}"))}"
   fi
