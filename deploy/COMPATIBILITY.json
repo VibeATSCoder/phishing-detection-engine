@@ -14,8 +14,8 @@
     },
     "reviewer": {
       "repository": "https://github.com/VibeATSCoder/agentic-phishing-review",
-      "version": "1.8.0",
-      "tag": "v1.8.0"
+      "version": "1.9.0",
+      "tag": "v1.9.0"
     },
     "rag": {
       "repository": "https://github.com/VibeATSCoder/phishing-rag-service",

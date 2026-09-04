@@ -105,7 +105,7 @@ ARTEFACT_DIRS=()
 # numbers and tests/test_release_contract.py asserts the two agree, so these
 # cannot drift from the contract unnoticed.
 DETECTOR_VERSION="${DETECTOR_VERSION:-3.4.1}"
-REVIEW_VERSION="${REVIEW_VERSION:-1.8.0}"
+REVIEW_VERSION="${REVIEW_VERSION:-1.9.0}"
 RAG_VERSION="${RAG_VERSION:-1.0.2}"
 STACK_VERSION="${STACK_VERSION:-1.1.0}"
 

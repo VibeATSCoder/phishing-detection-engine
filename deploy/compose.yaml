@@ -2,14 +2,14 @@ name: persianphish-integrated
 
 services:
   review:
-    image: agentic-phishing-review:1.8.0-integrated
+    image: agentic-phishing-review:1.9.0-integrated
     build:
       context: ${AGENT_REVIEW_CONTEXT:-../../agentic-phishing-review}
       dockerfile: Dockerfile
       target: production
       args:
         INSTALL_BROWSER: "0"
-        APP_VERSION: "1.8.0"
+        APP_VERSION: "1.9.0"
     environment:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY in .env}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-google/gemma-4-31b-it}
