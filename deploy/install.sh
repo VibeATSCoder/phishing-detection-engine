@@ -673,7 +673,15 @@ if [ "${WITH_REFERENCES}" -eq 0 ]; then
   if [ -n "${rag_index}" ]; then
     say "  index found at ${rag_index}"
   else
-    say "  no index found — it needs the Embedding_Index directory to run"
+    # Be explicit that this is a dead end rather than a missing setting. The
+    # index is a 3 GB directory of parquet files built from the reference
+    # corpus; no release publishes it, so an operator who does not already have
+    # one cannot obtain it by answering a prompt. Asking for a path without
+    # saying so sent people looking for a file that was never on their machine.
+    say "  no index on this machine, and none is published with the release."
+    say "  The service needs a 3 GB Embedding_Index directory (block_index.parquet"
+    say "  and friends), copied from wherever it was built. Without it the service"
+    say "  cannot start, so answer no unless you already have one."
   fi
   if [ "${mem_gb}" -gt 0 ] && [ "${mem_gb}" -lt 8 ]; then
     say "  warning: this host has ${mem_gb} GB of RAM and the service wants 8 GB."
@@ -683,6 +691,8 @@ if [ "${WITH_REFERENCES}" -eq 0 ]; then
   # Default yes only when it costs nothing: already here, and an index to use.
   if [ "${rag_local}" != "none" ] && [ -n "${rag_index}" ]; then
     default="y"; prompt='  enable it? [Y/n]: '
+  elif [ -z "${rag_index}" ]; then
+    default="n"; prompt='  enable it anyway, and give an index path? [y/N]: '
   else
     default="n"; prompt='  enable it? [y/N]: '
   fi
@@ -691,7 +701,7 @@ if [ "${WITH_REFERENCES}" -eq 0 ]; then
       WITH_REFERENCES=1
       if [ -z "${rag_index}" ]; then
         while :; do
-          answer="$(ask '  path to the Embedding_Index directory (empty to skip): ' '')" \
+          answer="$(ask '  path to an Embedding_Index you already have (empty to skip): ' '')" \
             || answer=""
           answer="${answer/#\~/${HOME}}"
           if [ -z "${answer//[[:space:]]/}" ]; then
