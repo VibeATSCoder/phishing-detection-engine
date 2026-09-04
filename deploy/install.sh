@@ -1091,12 +1091,19 @@ if [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ]; then
   say ""
   say "An API key on the detector itself is optional: it is published only on"
   say "127.0.0.1, so an empty value is a reasonable choice on a single host."
+  say "Whatever you pick here is what the browser extension needs; leaving it"
+  say "open means the extension's API key field stays empty."
   say "  1) leave it open (default)"
   say "  2) generate one"
   say "  3) I will supply my own"
   case "$(ask '  choice [1]: ' 1)" in
     2) ppd_key="$(generate_key)"; set_env PPD_API_KEY "${ppd_key}"
-       say "  generated — send it as the X-API-Key header" ;;
+       # Shown, not hidden. Unlike the other secrets this one has to be typed
+       # into the browser extension by hand, and generating it silently left the
+       # operator with a running stack and no way to connect to it.
+       say "  generated — put this in the extension's API key field:"
+       say "    ${ppd_key}"
+       say "  (printed again by: bash deploy/deploy.sh --show-config)" ;;
     3) supplied="$(ask_secret '  detector API key: ')" || supplied=""
        [ -n "${supplied//[[:space:]]/}" ] && set_env PPD_API_KEY "${supplied}" ;;
     *) set_env PPD_API_KEY "" ;;

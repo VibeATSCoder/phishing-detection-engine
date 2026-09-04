@@ -10,6 +10,7 @@
 #   deploy.sh --with-references    also start the retrieval service
 #   deploy.sh --full               same as --with-references
 #   deploy.sh --verify             check artefact checksums before loading
+#   deploy.sh --show-config        print the extension settings and exit
 #
 # Checksums are not verified by default. A mismatch used to abort the deploy,
 # which turned a mangled .sha256 text file into a hard stop even when the image
@@ -34,11 +35,13 @@ readonly SCRIPT_DIR
 IMAGE_DIR=""
 WITH_REFERENCES=0
 VERIFY_CHECKSUMS=0
+SHOW_CONFIG=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --image-dir) IMAGE_DIR="${2:?--image-dir needs a path}"; shift 2 ;;
     --with-references|--full) WITH_REFERENCES=1; shift ;;
     --verify) VERIFY_CHECKSUMS=1; shift ;;
+    --show-config) SHOW_CONFIG=1; shift ;;
     -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -57,6 +60,25 @@ else
   # The artefacts normally sit beside the unpacked bundle, one level up from
   # this script, so look there as well as here.
   SEARCH_DIRS=("${SCRIPT_DIR}" "$(cd -- "${SCRIPT_DIR}/.." && pwd)" "${PWD}")
+fi
+
+# Answered before anything else is checked. Someone who just wants to know what
+# to type into the extension should not need Docker running, the images present,
+# or the stack started to find out.
+if [ "${SHOW_CONFIG}" -eq 1 ]; then
+  cd "${SCRIPT_DIR}"
+  [ -f .env ] || { echo "no deploy/.env here; run the installer first" >&2; exit 1; }
+  ppd_key="$(sed -n 's/^PPD_API_KEY=//p' .env | tail -n 1)"
+  ppd_port="$(sed -n 's/^PPD_HOST_PORT=//p' .env | tail -n 1)"
+  ppd_port="${ppd_port:-8088}"
+  echo "Browser extension — open its options page and set:"
+  echo "  Backend URL   http://127.0.0.1:${ppd_port}"
+  if [ -z "${ppd_key//[[:space:]]/}" ]; then
+    echo "  API key       (leave empty — this detector requires none)"
+  else
+    echo "  API key       ${ppd_key}"
+  fi
+  exit 0
 fi
 
 # Only docker is required. sha256sum used to be, which meant a host without
@@ -223,9 +245,30 @@ echo
 echo "detector  http://127.0.0.1:${detector_port}/health"
 echo "reviewer  http://127.0.0.1:${review_port}/ready"
 echo "metrics   http://127.0.0.1:${detector_port}/metrics and :${review_port}/metrics"
+# What to type into the browser extension. Printing this is the difference
+# between a running stack and a usable one: the key is generated or left empty
+# during the install, and an operator who did not write it down at the time had
+# no way to find out which, or what it was.
+ppd_key="$(sed -n 's/^PPD_API_KEY=//p' .env | tail -n 1)"
+echo
+echo "Browser extension — open its options page and set:"
+echo "  Backend URL   http://127.0.0.1:${detector_port}"
+if [ -z "${ppd_key//[[:space:]]/}" ]; then
+  echo "  API key       (leave empty — this detector requires none)"
+else
+  echo "  API key       ${ppd_key}"
+fi
 echo
 echo "Smoke test:"
-echo "  curl -s -X POST http://127.0.0.1:${detector_port}/v1/detect \\"
-echo "    -H 'Content-Type: application/json' -d '{\"url\":\"https://www.digikala.com/\"}'"
+if [ -z "${ppd_key//[[:space:]]/}" ]; then
+  echo "  curl -s -X POST http://127.0.0.1:${detector_port}/v1/detect \\"
+  echo "    -H 'Content-Type: application/json' -d '{\"url\":\"https://www.digikala.com/\"}'"
+else
+  echo "  curl -s -X POST http://127.0.0.1:${detector_port}/v1/detect \\"
+  echo "    -H 'Content-Type: application/json' -H 'X-API-Key: ${ppd_key}' \\"
+  echo "    -d '{\"url\":\"https://www.digikala.com/\"}'"
+fi
+echo
+echo "Show this again at any time:  bash deploy/deploy.sh --show-config"
 echo
 echo "PersianPhish stack is up: detector ${DETECTOR_VERSION}, reviewer ${REVIEW_VERSION}."
