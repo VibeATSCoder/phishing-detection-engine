@@ -291,3 +291,30 @@ def test_manual_mode_lists_everything_before_asking_for_any_of_it() -> None:
     plan = SOURCE.index("These are the files this install needs")
     images = SOURCE.index('step "images"')
     assert plan < images, "the list has to come before the first request"
+
+
+def test_the_sudo_handoff_runs_a_shell_not_a_builtin() -> None:
+    """`sudo ${run_cmd}` cannot work.
+
+    run_cmd starts with cd, which is a shell builtin with no executable behind
+    it, so sudo has nothing to exec: reported live as
+    "sudo: 'cd': command not found" after a complete, successful install.
+    """
+    assert 'run_cmd="${SUDO} ${run_cmd}"' not in SOURCE, "the broken form is back"
+    assert 'run_cmd="${SUDO} bash -c \\"${run_cmd}\\""' in SOURCE
+
+
+def test_group_membership_is_read_from_the_database_not_the_process() -> None:
+    """`id -nG` with no argument reports the groups the *process* started with.
+
+    A group added seconds earlier by usermod cannot appear there, so the sg
+    branch was never taken in exactly the case it was written for, and every
+    such install fell through to the sudo branch instead.
+    """
+    assert 'id -nG "$(id -un)"' in SOURCE
+    assert "id -nG 2>/dev/null | tr" not in SOURCE, "the process-local check is back"
+
+
+def test_the_install_path_is_quoted_in_the_start_command() -> None:
+    """An unquoted path breaks cd as soon as a directory contains a space."""
+    assert """run_cmd="cd '$(pwd)' && bash deploy/deploy.sh\"""" in SOURCE

@@ -1143,7 +1143,9 @@ if [ "${WITH_REFERENCES}" -eq 1 ]; then
   fi
 fi
 
-run_cmd="cd $(pwd) && bash deploy/deploy.sh"
+# Quoted: an unquoted path breaks cd the moment a directory has a space in it,
+# which "cd /home/a b/persianphish" reports as "too many arguments".
+run_cmd="cd '$(pwd)' && bash deploy/deploy.sh"
 [ "${WITH_REFERENCES}" -eq 1 ] && run_cmd="${run_cmd} --with-references"
 
 # deploy.sh is a separate process, so the docker() override defined above does
@@ -1151,13 +1153,23 @@ run_cmd="cd $(pwd) && bash deploy/deploy.sh"
 # shell with that membership already active — which the current login shell will
 # not have until the operator logs out and back in.
 if [ "${DOCKER_NEEDS_SUDO}" -eq 1 ]; then
-  if command -v sg >/dev/null 2>&1 && id -nG 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
+  # `id -nG` with no argument reports the groups *this process* was started
+  # with, which cannot include one added a few seconds ago — so the sg branch
+  # was never taken in exactly the situation it was written for. Naming the user
+  # queries the group database instead, which is already up to date.
+  if command -v sg >/dev/null 2>&1 \
+     && id -nG "$(id -un)" 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
+    say ""
+    say "  Starting under the docker group you were just added to."
     run_cmd="sg docker -c \"${run_cmd}\""
   else
     say ""
     say "  Docker needs sudo for this user, so the start below runs under sudo."
     say "  Log out and back in once and it will not need to again."
-    run_cmd="${SUDO} ${run_cmd}"
+    # `sudo ${run_cmd}` cannot work: run_cmd begins with cd, which is a shell
+    # builtin and not a program sudo can execute — it failed with
+    # "sudo: 'cd': command not found". A shell has to run the whole string.
+    run_cmd="${SUDO} bash -c \"${run_cmd}\""
   fi
 fi
 
