@@ -30,7 +30,7 @@ from pathlib import Path
 from .url_utils import UnsafeURL, hostname, registrable_domain
 
 
-CATALOG_VERSION = "allowlist-20260905-v1"
+CATALOG_VERSION = "allowlist-20260905-v2"
 
 
 #: Iranian services whose users are the target of the campaigns this detects.
@@ -50,6 +50,14 @@ _IRANIAN = {
     "cafebazaar.ir", "myket.ir", "zoomit.ir", "soft98.ir",
     "p30download.ir", "p30download.com", "digiato.com", "isna.ir", "irna.ir",
     "mehrnews.com", "tasnimnews.com", "farsnews.ir",
+    # education, public services and utilities. Several of these answer 403 to
+    # anything that is not a browser — sanjesh.org does, and was reported
+    # crawl_failed on every visit, which is the shape of failure this list
+    # exists to answer.
+    "sanjesh.org", "medu.ir", "irandoc.ac.ir", "iranketab.ir",
+    "digikalajet.com", "eitaa.com", "bale.ai", "rubika.ir",
+    "shatel.ir", "asiatech.ir", "parspack.com", "iranserver.com",
+    "namasha.com", "shad.ir", "ical.ir",
 }
 
 #: International services, which appear in Persian-language phishing as the
