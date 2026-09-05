@@ -1,7 +1,6 @@
 # Minimal integrated deployment
 
-Compatibility set: detector **v3.1.0**, reviewer **v1.3.0**, optional extension
-client **v3.6.0**. The exact contract is recorded in `COMPATIBILITY.json`.
+Compatibility set: detector **v3.6.0**, reviewer **v1.10.0**, optional extension client **v3.5.0**. The exact contract is recorded in `COMPATIBILITY.json`.
 
 This bundle runs two services:
 
