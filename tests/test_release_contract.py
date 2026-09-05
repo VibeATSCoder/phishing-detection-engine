@@ -20,8 +20,8 @@ def test_component_versions_and_compose_are_synchronized():
     # Versioned independently of the detector; the manifest is the authority
     # and test_recorded_extension_version_matches_the_extension_repository
     # compares against it.
-    assert contract["components"]["extension"]["version"] == "3.5.0"
-    assert contract["components"]["reviewer"]["version"] == "1.10.0"
+    assert contract["components"]["extension"]["version"] == "3.6.0"
+    assert contract["components"]["reviewer"]["version"] == "1.11.0"
     # Reference retrieval is optional: the reviewer runs without it and simply
     # supplies no references, so a deployment lacking it is degraded rather than
     # broken. The flag is asserted so that status stays deliberate.
@@ -34,7 +34,7 @@ def test_component_versions_and_compose_are_synchronized():
 
     compose = (ROOT / "deploy" / "compose.yaml").read_text(encoding="utf-8")
     assert "phishing-detection-engine:3.8.0-integrated" in compose  # build-from-source tag
-    assert "agentic-phishing-review:1.10.0-integrated" in compose
+    assert "agentic-phishing-review:1.11.0-integrated" in compose
     assert "${AGENT_REVIEW_CONTEXT:-../../agentic-phishing-review}" in compose
     # The contract declares a reviewer-to-rag call. If the integrated stack
     # cannot reach a reference service, that declaration describes nothing: the
