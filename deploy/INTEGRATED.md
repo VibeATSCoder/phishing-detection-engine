@@ -1,6 +1,6 @@
 # Minimal integrated deployment
 
-Compatibility set: detector **v3.6.0**, reviewer **v1.10.0**, optional extension client **v3.5.0**. The exact contract is recorded in `COMPATIBILITY.json`.
+Compatibility set: detector **v3.7.0**, reviewer **v1.10.0**, optional extension client **v3.5.0**. The exact contract is recorded in `COMPATIBILITY.json`.
 
 This bundle runs two services:
 
@@ -113,7 +113,7 @@ curl --fail -X POST http://127.0.0.1:8088/v1/detect \
 
 If `PPD_API_KEY` is set, add `-H 'X-API-Key: your-key'`. The English review UI is at `http://127.0.0.1:8090/`.
 
-To connect `phishingshield-persian` v3.6.0, open the extension's Options page,
+To connect `phishingshield-persian` v3.7.0, open the extension's Options page,
 enable backend review, use `http://127.0.0.1:8088`, and enter the same
 `PPD_API_KEY` configured here. The extension sends only suspicious URLs and
 never sends page HTML, cookies, headers, or form values.

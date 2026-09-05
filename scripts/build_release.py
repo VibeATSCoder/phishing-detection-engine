@@ -102,7 +102,7 @@ def build(root: Path, destination: Path) -> dict[str, object]:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", default=".")
-    parser.add_argument("--output", default="release/phishing-detection-engine-v3.6.0.zip")
+    parser.add_argument("--output", default="release/phishing-detection-engine-v3.7.0.zip")
     args = parser.parse_args()
     build(Path(args.root).resolve(), Path(args.output).resolve())
     return 0

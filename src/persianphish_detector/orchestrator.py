@@ -9,6 +9,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
 
+from .allowlist import CATALOG_VERSION, allowlisted_domain
 from .agent import AgentClient, AgentReview, AgentServiceError
 from .config import DetectorConfig
 from .crawl import BrowserCrawler, HttpCrawler, from_browser_payload
@@ -191,6 +192,28 @@ class Detector:
             return invalid
 
         intel_match = self.intel.lookup(normalized)
+
+        # Answered before the crawl, but after the local phishing feed has had
+        # its say. The feed keeps precedence deliberately: a domain observed
+        # serving phishing is not cleared because it also appears on a list of
+        # large sites, and that ordering is what stops the allowlist becoming a
+        # way to launder a known-bad host.
+        #
+        # Beyond the saved crawl, model pass and two LLM calls, this answers for
+        # sites whose crawler defences make the ordinary path fail —
+        # stackoverflow.com returns 403 and was reported crawl_failed, which
+        # reads to a user as this service being broken rather than as the site
+        # declining to be read.
+        allowlisted = allowlisted_domain(normalized)
+        if allowlisted and not intel_match:
+            METRICS.crawl_outcomes.labels(source="allowlist", status="skipped").inc()
+            return self._result(
+                request_id, normalized, normalized, Verdict.LEGITIMATE, 0.0, "allowlist",
+                CrawlStatus.OK,
+                ["host_on_allowlist", f"allowlist_entry_{allowlisted}", CATALOG_VERSION],
+                {"rf": None, "tcn": None}, started, {},
+            )
+
         if intel_match:
             METRICS.intel_matches.labels(
                 source=intel_match.source, verdict=intel_match.verdict
