@@ -12,6 +12,7 @@ import pytest
 
 from persianphish_detector.allowlist import (
     ALLOWLISTED_DOMAINS,
+    ALLOWLISTED_SUFFIXES,
     CATALOG_VERSION,
     allowlisted_domain,
 )
@@ -99,3 +100,74 @@ def test_the_catalog_version_is_recorded() -> None:
 def test_the_brands_the_owner_named_are_present() -> None:
     for domain in ("filimo.com", "google.com", "gmail.com", "yahoo.com"):
         assert domain in ALLOWLISTED_DOMAINS
+
+
+# ------------------------------------------------- a closed namespace ---
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://gov.ir/",
+        "https://police.gov.ir/",
+        "https://mail.tehran.gov.ir/inbox",
+        "http://portal.mefa.gov.ir/",
+    ],
+)
+def test_a_government_host_is_cleared(url: str) -> None:
+    """gov.ir cannot be registered at will, so being inside it is already a
+    statement about who operates the host."""
+    assert allowlisted_domain(url) == "gov.ir"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://gov.ir.verify-login.example/",   # the suffix as a prefix
+        "https://notgov.ir/",                    # no label boundary
+        "https://mygov.ir/",
+        "https://evil.example/gov.ir/login",      # in the path
+    ],
+)
+def test_a_lookalike_of_the_namespace_is_refused(url: str) -> None:
+    assert allowlisted_domain(url) is None, url
+
+
+def test_only_closed_namespaces_are_suffixes() -> None:
+    """A registry anyone can buy from would disable this service wholesale.
+
+    .ir and .com are open; clearing either would clear a third of the web.
+    """
+    for suffix in ALLOWLISTED_SUFFIXES:
+        assert suffix.count(".") >= 1, f"{suffix!r} is a bare TLD"
+        assert suffix not in {"ir", "com", "net", "org", "co.uk", "ac.ir", "co.ir"}
+
+
+# ------------------------------------------------------------- banking ---
+
+@pytest.mark.parametrize(
+    "url,expected",
+    [
+        ("https://bmi.ir/", "bmi.ir"),
+        ("https://ib.bmi.ir/login", "bmi.ir"),          # internet banking
+        ("https://bank.tejaratbank.ir/", "tejaratbank.ir"),
+        ("https://www.cbi.ir/", "cbi.ir"),
+        ("https://sep.ir/", "sep.ir"),
+    ],
+)
+def test_a_bank_and_its_subdomains_are_cleared(url: str, expected: str) -> None:
+    """The login lives on a subdomain and enumerating them would go stale."""
+    assert allowlisted_domain(url) == expected
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://bmi.ir.secure-login.example/",
+        "https://bankmellat.ir.verify.ir/",
+        "https://ib-bmi.ir/",
+        "https://xn--bmi-8va.ir/",
+    ],
+)
+def test_a_bank_lookalike_is_never_cleared(url: str) -> None:
+    """The highest-value target in Persian phishing, so the shape that matters."""
+    assert allowlisted_domain(url) is None, url
