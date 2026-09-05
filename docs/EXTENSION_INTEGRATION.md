@@ -1,6 +1,6 @@
 # Browser extension integration
 
-`phishingshield-persian` v3.7.1 always runs its offline URL Random Forest first.
+`phishingshield-persian` v3.8.0 always runs its offline URL Random Forest first.
 Its optional backend connection is disabled by default and escalates only a
 local `suspicious` result to this detector.
 

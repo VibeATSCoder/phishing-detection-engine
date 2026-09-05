@@ -9,8 +9,8 @@
     },
     "detector": {
       "repository": "https://github.com/VibeATSCoder/phishing-detection-engine",
-      "version": "3.7.1",
-      "tag": "v3.7.1"
+      "version": "3.8.0",
+      "tag": "v3.8.0"
     },
     "reviewer": {
       "repository": "https://github.com/VibeATSCoder/agentic-phishing-review",
