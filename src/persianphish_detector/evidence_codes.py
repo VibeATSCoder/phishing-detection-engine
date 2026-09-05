@@ -93,6 +93,15 @@ AGENT_CODE_SEVERITY: dict[str, str] = {
     "reference_form_mismatch": Severity.MEDIUM,
     "reference_embedded_media_mismatch": Severity.LOW,
     "reference_favicon_mismatch": Severity.LOW,
+    # Added after this table was written, so both fell to the LOW default and
+    # sorted below the credential field they explain. On a brand-impersonation
+    # page these are the finding: "this page says it is Filimo and this domain
+    # is not Filimo's" is why the verdict is phishing, while "it asks for a
+    # password" is true of every login page in existence. The card is ordered by
+    # severity, so the reader was shown the ordinary observation first and the
+    # decisive one last.
+    "known_brand_domain_mismatch": Severity.HIGH,
+    "deceptive_link_target": Severity.HIGH,
 }
 
 # Deterministic URL and DOM observations, derived from the numeric feature

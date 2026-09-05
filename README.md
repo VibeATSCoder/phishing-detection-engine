@@ -2,7 +2,7 @@
 
 Current service release: **v3.1.0**. The integrated stack pins
 `agentic-phishing-review` **v1.3.0** and is compatible with the optional backend
-mode in `phishingshield-persian` **v3.8.0**. See
+mode in `phishingshield-persian` **v3.8.1**. See
 [`deploy/COMPATIBILITY.json`](deploy/COMPATIBILITY.json) for the machine-readable
 contract.
 
@@ -111,7 +111,7 @@ curl --fail http://127.0.0.1:8088/ready
 See [Integrated deployment](deploy/INTEGRATED.md) for startup, smoke testing, backup, and rollback.
 
 The browser extension remains independently installable and offline by
-default. Its v3.8.0 Options page can explicitly enable escalation of local
+default. Its v3.8.1 Options page can explicitly enable escalation of local
 `suspicious` results to this API. See
 [Extension integration](docs/EXTENSION_INTEGRATION.md).
 
