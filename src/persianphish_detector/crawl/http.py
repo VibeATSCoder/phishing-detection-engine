@@ -47,15 +47,48 @@ class HttpCrawler:
         allow_private_network: bool = False,
         min_quality_score: float = 0.55,
         user_agent: str = DEFAULT_USER_AGENT,
+        attempts: int = 3,
     ) -> None:
         self.timeout_s = timeout_s
+        self.attempts = max(1, attempts)
         self.max_bytes = max_bytes
         self.max_redirects = max_redirects
         self.allow_private_network = allow_private_network
         self.min_quality_score = min_quality_score
         self.user_agent = user_agent
 
+    #: Failures worth trying again. A timeout or a dropped connection says
+    #: something about the moment, not about the page; an HTTP error, a refused
+    #: redirect or an unsafe address says something about the page and repeating
+    #: it only costs time.
+    _RETRYABLE = (CrawlStatus.TIMEOUT, CrawlStatus.UNREACHABLE)
+
     async def fetch(self, url: str) -> CrawlEvidence:
+        """Fetch, retrying the failures that are about the network.
+
+        There was no retry at all: one httpx call, and any timeout or reset
+        became crawl_failed immediately. On a slow or filtered link that is the
+        common case rather than the exception, and it denied the agent the page
+        entirely — the detector cannot review content it threw away.
+        """
+        evidence = await self._fetch_once(url)
+        for attempt in range(2, self.attempts + 1):
+            if evidence.status not in self._RETRYABLE:
+                return evidence
+            # Short, widening pause: a link that is briefly saturated clears in
+            # a second or two, and waiting longer than the request itself would
+            # cost more than it recovers.
+            await asyncio.sleep(0.5 * (attempt - 1))
+            retried = await self._fetch_once(url)
+            # Keep the better outcome. A retry that fails differently should not
+            # replace a first attempt that at least brought back a body.
+            if retried.usable or retried.quality_score > evidence.quality_score:
+                evidence = retried
+            if evidence.usable:
+                break
+        return evidence
+
+    async def _fetch_once(self, url: str) -> CrawlEvidence:
         started = time.perf_counter()
         try:
             target = normalize_url(url)
@@ -89,7 +122,18 @@ class HttpCrawler:
             "cache-control": "no-cache",
         }
         try:
-            timeout = httpx.Timeout(self.timeout_s)
+            # Split rather than one number for everything. A connection that is
+            # slow to establish and a page that is slow to stream are different
+            # problems, and a single budget covering both means a large page on
+            # a slow link fails on time the handshake already spent. The read
+            # budget is per-chunk, so a page that keeps arriving keeps its
+            # deadline refreshed.
+            timeout = httpx.Timeout(
+                connect=min(self.timeout_s, 10.0),
+                read=self.timeout_s,
+                write=self.timeout_s,
+                pool=self.timeout_s,
+            )
             async with httpx.AsyncClient(
                 timeout=timeout,
                 follow_redirects=False,
@@ -116,15 +160,27 @@ class HttpCrawler:
                             continue
                         body = bytearray()
                         truncated = False
-                        async for chunk in response.aiter_bytes():
-                            remaining = self.max_bytes - len(body)
-                            if remaining <= 0:
-                                truncated = True
-                                break
-                            body.extend(chunk[:remaining])
-                            if len(chunk) > remaining:
-                                truncated = True
-                                break
+                        interrupted = ""
+                        try:
+                            async for chunk in response.aiter_bytes():
+                                remaining = self.max_bytes - len(body)
+                                if remaining <= 0:
+                                    truncated = True
+                                    break
+                                body.extend(chunk[:remaining])
+                                if len(chunk) > remaining:
+                                    truncated = True
+                                    break
+                        except (httpx.TimeoutException, httpx.HTTPError) as exc:
+                            # The connection dropped part-way through the body.
+                            # What already arrived is still the page, and on a
+                            # poor link it is usually most of it — discarding it
+                            # turned a slow download into crawl_failed, which
+                            # then denied the agent any content at all. The
+                            # quality gate below decides whether it is enough.
+                            if not body:
+                                raise
+                            interrupted = f"{type(exc).__name__}: {exc}"
                         data = bytes(body)
                         content_type = response.headers.get("content-type", "")
                         html = decode_body(data, content_type)
@@ -136,6 +192,8 @@ class HttpCrawler:
                         )
                         if truncated:
                             reasons.append("html_truncated_at_byte_limit")
+                        if interrupted:
+                            reasons.append("body_incomplete_connection_interrupted")
                         selected_headers: Dict[str, str] = {
                             key.lower(): value
                             for key, value in response.headers.items()
@@ -156,6 +214,7 @@ class HttpCrawler:
                             source="http",
                             quality_score=score,
                             quality_reasons=reasons,
+                            error=interrupted,
                             elapsed_ms=(time.perf_counter() - started) * 1000,
                         )
         except httpx.TimeoutException as exc:
