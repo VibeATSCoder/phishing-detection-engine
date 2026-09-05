@@ -692,10 +692,7 @@ if [ "${WITH_REFERENCES}" -eq 0 ]; then
     # corpus; no release publishes it, so an operator who does not already have
     # one cannot obtain it by answering a prompt. Asking for a path without
     # saying so sent people looking for a file that was never on their machine.
-    say "  no index on this machine, and none is published with the release."
-    say "  The service needs a 3 GB Embedding_Index directory (block_index.parquet"
-    say "  and friends), copied from wherever it was built. There is nowhere to"
-    say "  download one, so answer no unless you already have it on this host."
+    say "  no index here — it is published and can be downloaded (about 1 GB)."
   fi
   if [ "${mem_gb}" -gt 0 ] && [ "${mem_gb}" -lt 8 ]; then
     say "  warning: this host has ${mem_gb} GB of RAM and the service wants 8 GB."
@@ -706,7 +703,7 @@ if [ "${WITH_REFERENCES}" -eq 0 ]; then
   if [ "${rag_local}" != "none" ] && [ -n "${rag_index}" ]; then
     default="y"; prompt='  enable it? [Y/n]: '
   elif [ -z "${rag_index}" ]; then
-    default="n"; prompt='  enable it anyway, and give an index path? [y/N]: '
+    default="n"; prompt='  enable it, downloading the index? [y/N]: '
   else
     default="n"; prompt='  enable it? [y/N]: '
   fi
