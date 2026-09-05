@@ -13,10 +13,13 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_component_versions_and_compose_are_synchronized():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     project_version = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, flags=re.MULTILINE)
-    assert project_version and project_version.group(1) == __version__ == "3.5.0"
+    assert project_version and project_version.group(1) == __version__ == "3.6.0"
 
     contract = json.loads((ROOT / "deploy" / "COMPATIBILITY.json").read_text(encoding="utf-8"))
-    assert contract["components"]["detector"]["version"] == "3.5.0"
+    assert contract["components"]["detector"]["version"] == "3.6.0"
+    # Versioned independently of the detector; the manifest is the authority
+    # and test_recorded_extension_version_matches_the_extension_repository
+    # compares against it.
     assert contract["components"]["extension"]["version"] == "3.5.0"
     assert contract["components"]["reviewer"]["version"] == "1.10.0"
     # Reference retrieval is optional: the reviewer runs without it and simply
@@ -30,7 +33,7 @@ def test_component_versions_and_compose_are_synchronized():
     ]
 
     compose = (ROOT / "deploy" / "compose.yaml").read_text(encoding="utf-8")
-    assert "phishing-detection-engine:3.5.0-integrated" in compose  # build-from-source tag
+    assert "phishing-detection-engine:3.6.0-integrated" in compose  # build-from-source tag
     assert "agentic-phishing-review:1.10.0-integrated" in compose
     assert "${AGENT_REVIEW_CONTEXT:-../../agentic-phishing-review}" in compose
     # The contract declares a reviewer-to-rag call. If the integrated stack
@@ -57,9 +60,9 @@ def test_component_versions_and_compose_are_synchronized():
 def test_recorded_extension_version_matches_the_extension_repository():
     """Catch cross-repo drift where both sides of this file agree and are wrong.
 
-    The extension version was recorded here as 3.5.0 while the shipped manifest
-    said 3.5.0. Nothing noticed, because the assertion above and the contract
-    were the same stale constant restating each other. The manifest is the
+    The extension version was once recorded here as one number while the
+    shipped manifest said another. Nothing noticed, because the assertion above
+    and the contract were the same stale constant restating each other. The manifest is the
     authority; this compares against it whenever the extension is checked out
     beside this repository, and skips when it is not.
     """
@@ -78,7 +81,7 @@ def test_recorded_extension_version_matches_the_extension_repository():
 def test_clean_docker_build_does_not_require_runtime_database():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "COPY var" not in dockerfile
-    assert 'ARG APP_VERSION=3.5.0' in dockerfile
+    assert 'ARG APP_VERSION=3.6.0' in dockerfile
 
 
 def test_shipped_requirements_carry_the_observability_extra():

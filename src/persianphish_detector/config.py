@@ -40,6 +40,7 @@ class DetectorConfig:
     use_browser: bool = True
     allow_private_network: bool = False
     http_timeout_s: float = 8.0
+    http_attempts: int = 3
     browser_timeout_s: float = 12.0
     max_html_bytes: int = 10_000_000
     max_redirects: int = 5
@@ -84,6 +85,7 @@ class DetectorConfig:
             use_browser=_env_bool("PPD_USE_BROWSER", True),
             allow_private_network=_env_bool("PPD_ALLOW_PRIVATE_NETWORK", False),
             http_timeout_s=_env_float("PPD_HTTP_TIMEOUT_S", 8.0, minimum=1.0, maximum=60.0),
+            http_attempts=_env_int("PPD_HTTP_ATTEMPTS", 3, minimum=1, maximum=6),
             browser_timeout_s=_env_float("PPD_BROWSER_TIMEOUT_S", 12.0, minimum=2.0, maximum=120.0),
             max_html_bytes=_env_int(
                 "PPD_MAX_HTML_BYTES", 10_000_000, minimum=100_000, maximum=20_000_000

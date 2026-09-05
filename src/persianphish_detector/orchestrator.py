@@ -98,6 +98,7 @@ class Detector:
         self.config = config
         self.http = HttpCrawler(
             timeout_s=config.http_timeout_s,
+            attempts=config.http_attempts,
             max_bytes=config.max_html_bytes,
             max_redirects=config.max_redirects,
             allow_private_network=config.allow_private_network,
@@ -225,7 +226,23 @@ class Detector:
             source=evidence.source, status=evidence.status.value
         ).inc()
         crawl_ms = evidence.elapsed_ms
-        if not evidence.usable and self.browser and not browser_evidence and evidence.status in {CrawlStatus.PARTIAL, CrawlStatus.BLOCKED}:
+        # The browser is also the right answer when the plain fetch never got a
+        # body. It used to be offered only for PARTIAL and BLOCKED, so a timeout
+        # or a reset — the two failures a slow or filtered link actually
+        # produces — went straight to crawl_failed with the browser sitting
+        # there unused. It carries its own timeouts and a real TLS stack, and
+        # frequently succeeds where httpx gave up.
+        if (
+            not evidence.usable
+            and self.browser
+            and not browser_evidence
+            and evidence.status in {
+                CrawlStatus.PARTIAL,
+                CrawlStatus.BLOCKED,
+                CrawlStatus.TIMEOUT,
+                CrawlStatus.UNREACHABLE,
+            }
+        ):
             browser_result = await self.browser.fetch(normalized)
             if browser_result.usable or browser_result.quality_score > evidence.quality_score:
                 evidence = browser_result

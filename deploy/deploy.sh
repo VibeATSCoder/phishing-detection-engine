@@ -20,7 +20,7 @@
 # Required in .env: OPENROUTER_API_KEY and INTERNAL_REVIEW_API_KEY.
 set -euo pipefail
 
-readonly DETECTOR_VERSION="3.5.0"
+readonly DETECTOR_VERSION="3.6.0"
 readonly REVIEW_VERSION="1.10.0"
 # Overridable from .env, so --with-references matches the image you loaded.
 RAG_VERSION="1.0.2"
