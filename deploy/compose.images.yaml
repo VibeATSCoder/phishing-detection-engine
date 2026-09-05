@@ -5,7 +5,7 @@ services:
     # The tag the reviewer's release actually publishes. It used to carry an
     # "-integrated" suffix that no release ever produced, so loading the
     # published artefact left Compose looking for an image that did not exist.
-    image: agentic-phishing-review:${REVIEW_VERSION:-1.9.0}
+    image: agentic-phishing-review:${REVIEW_VERSION:-1.10.0}
     platform: linux/amd64
     # These images are distributed as saved artefacts, never pushed to a
     # registry, so a missing tag should say so rather than attempt a pull.
@@ -67,7 +67,7 @@ services:
       options: {max-size: "10m", max-file: "3"}
 
   detector:
-    image: phishing-detection-engine:${DETECTOR_VERSION:-3.4.1}
+    image: phishing-detection-engine:${DETECTOR_VERSION:-3.5.0}
     platform: linux/amd64
     pull_policy: never
     depends_on:

@@ -53,19 +53,35 @@ def _rf_input_features(
     return extract_features(origin_view, facts), True
 
 
-def _deterministic_risk(features: Mapping[str, float], combined_score: float) -> bool:
-    """Risk evidence that does not depend on any model's opinion.
+def _observed_risk(features: Mapping[str, float]) -> bool:
+    """Risk that was observed on the page rather than inferred from it.
 
-    Extracted so the agent reconciliation and the eNamad corroboration share one
-    definition. Either of them clearing a page that trips this would be clearing
-    on inference over observation.
+    Every term here is a count taken from the DOM or the URL. None of them is a
+    model's opinion, which is what makes them safe to let veto a clearance.
     """
     return (
-        combined_score >= 0.5
-        or features["external_form_action_count"] > 0
+        features["external_form_action_count"] > 0
         or features["suspicious_token_count"] >= 2
         or (features["password_input_count"] > 0 and features["title_domain_token_overlap"] == 0)
     )
+
+
+def _deterministic_risk(features: Mapping[str, float], combined_score: float) -> bool:
+    """Observed risk, or the ensemble putting the page above the midpoint.
+
+    The docstring here used to claim this did not depend on any model's opinion,
+    while its first term was exactly that: the ensemble's own score. That term
+    meant a page the models happened to dislike could never be cleared by the
+    agent no matter what the agent found — google.com scores 0.898 on features
+    that are ordinary for a large site (a hidden form, an obfuscated script, a
+    shadow root) and was reported suspicious even though both passes called it
+    legitimate and recognised the host as Google's own domain.
+
+    It is kept for the phishing direction, where an ensemble already over the
+    midpoint is corroboration rather than an obstacle. The clearing direction
+    uses _observed_risk instead.
+    """
+    return combined_score >= 0.5 or _observed_risk(features)
 from .features import extract_features
 from .evidence_codes import derive_evidence
 from .intel import IntelMatch, IntelStore
@@ -498,12 +514,18 @@ class Detector:
             and (deterministic_risk or reviewer_established_support)
         ):
             return Verdict.PHISHING, reasons + ["agent_advisory_phishing_corroborated"]
+        # Cleared against what was observed, not against the ensemble's opinion.
+        # A high combined score is the models finding the page unusual, and a
+        # large modern site is unusual: hidden forms, obfuscated bundles and
+        # shadow roots are its ordinary furniture. Letting that veto a clearance
+        # meant the agent could never rescue exactly the sites it was best
+        # placed to recognise.
         if (
             review.verdict_candidate == "legitimate"
             and review.risk_score is not None
             and review.risk_score <= 0.20
             and review.confidence >= 0.75
-            and not deterministic_risk
+            and not _observed_risk(features)
             and evidence.usable
         ):
             return Verdict.LEGITIMATE, reasons + ["agent_advisory_legitimate_corroborated"]
