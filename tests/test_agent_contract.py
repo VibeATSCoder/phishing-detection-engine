@@ -181,3 +181,26 @@ def test_observed_risk_still_blocks_a_clearance() -> None:
     )
     verdict, _ = Detector._reconcile_agent(review, noisy, 0.10, _evidence())
     assert verdict is Verdict.SUSPICIOUS
+
+
+def test_the_decisive_codes_outrank_the_ordinary_ones() -> None:
+    """The card is ordered by severity, so this decides what the reader sees.
+
+    Both were added after the table was written and fell to the LOW default,
+    sorting below the credential field they explain. "This page says it is
+    Filimo and this domain is not Filimo's" is why the verdict is phishing;
+    "it asks for a password" is true of every login page in existence.
+    """
+    from persianphish_detector.evidence_codes import AGENT_CODE_SEVERITY
+
+    for code in ("known_brand_domain_mismatch", "deceptive_link_target"):
+        assert AGENT_CODE_SEVERITY.get(code) == "high", code
+    assert AGENT_CODE_SEVERITY["credential_fields"] == "medium"
+
+
+def test_every_reviewer_code_has_a_severity() -> None:
+    """An absent code defaults to LOW, which silently buries a new finding."""
+    from persianphish_detector.evidence_codes import AGENT_CODE_SEVERITY
+
+    missing = REVIEWER_EVIDENCE_CODES - set(AGENT_CODE_SEVERITY)
+    assert not missing, f"these would default to low and sort last: {sorted(missing)}"
