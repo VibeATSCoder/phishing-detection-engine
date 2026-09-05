@@ -13,10 +13,10 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_component_versions_and_compose_are_synchronized():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     project_version = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, flags=re.MULTILINE)
-    assert project_version and project_version.group(1) == __version__ == "3.7.0"
+    assert project_version and project_version.group(1) == __version__ == "3.7.1"
 
     contract = json.loads((ROOT / "deploy" / "COMPATIBILITY.json").read_text(encoding="utf-8"))
-    assert contract["components"]["detector"]["version"] == "3.7.0"
+    assert contract["components"]["detector"]["version"] == "3.7.1"
     # Versioned independently of the detector; the manifest is the authority
     # and test_recorded_extension_version_matches_the_extension_repository
     # compares against it.
@@ -33,7 +33,7 @@ def test_component_versions_and_compose_are_synchronized():
     ]
 
     compose = (ROOT / "deploy" / "compose.yaml").read_text(encoding="utf-8")
-    assert "phishing-detection-engine:3.7.0-integrated" in compose  # build-from-source tag
+    assert "phishing-detection-engine:3.7.1-integrated" in compose  # build-from-source tag
     assert "agentic-phishing-review:1.10.0-integrated" in compose
     assert "${AGENT_REVIEW_CONTEXT:-../../agentic-phishing-review}" in compose
     # The contract declares a reviewer-to-rag call. If the integrated stack
@@ -81,7 +81,7 @@ def test_recorded_extension_version_matches_the_extension_repository():
 def test_clean_docker_build_does_not_require_runtime_database():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "COPY var" not in dockerfile
-    assert 'ARG APP_VERSION=3.7.0' in dockerfile
+    assert 'ARG APP_VERSION=3.7.1' in dockerfile
 
 
 def test_shipped_requirements_carry_the_observability_extra():
