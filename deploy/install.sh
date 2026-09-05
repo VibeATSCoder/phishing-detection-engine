@@ -114,8 +114,8 @@ ARTEFACT_DIRS=()
 # Versions this stack releases as. deploy/COMPATIBILITY.json records the same
 # numbers and tests/test_release_contract.py asserts the two agree, so these
 # cannot drift from the contract unnoticed.
-DETECTOR_VERSION="${DETECTOR_VERSION:-3.4.1}"
-REVIEW_VERSION="${REVIEW_VERSION:-1.9.0}"
+DETECTOR_VERSION="${DETECTOR_VERSION:-3.5.0}"
+REVIEW_VERSION="${REVIEW_VERSION:-1.10.0}"
 RAG_VERSION="${RAG_VERSION:-1.0.2}"
 STACK_VERSION="${STACK_VERSION:-1.1.0}"
 

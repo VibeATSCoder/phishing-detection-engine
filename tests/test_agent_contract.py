@@ -96,11 +96,13 @@ _QUIET_FEATURES = {
 
 
 def _evidence() -> CrawlEvidence:
+    # usable means status OK *and* html present; an empty body is a failed crawl.
     return CrawlEvidence(
         target_url="https://not-filimo.example/",
         final_url="https://not-filimo.example/",
         status=CrawlStatus.OK,
         http_status=200,
+        html="<html><body><p>a page</p></body></html>",
     )
 
 
@@ -131,3 +133,51 @@ def test_a_phishing_call_without_concrete_support_still_abstains() -> None:
     )
     assert verdict is Verdict.SUSPICIOUS
     assert "agent_advisory_abstained" in reasons
+
+
+def test_the_ensemble_score_cannot_veto_a_clearance() -> None:
+    """A high combined score is the models finding a page unusual.
+
+    A large modern site is unusual: hidden forms, obfuscated bundles and shadow
+    roots are its ordinary furniture. google.com scores 0.898 on exactly those,
+    and was reported suspicious even though both passes called it legitimate and
+    recognised the host as Google's own domain. Letting the score veto the
+    clearance meant the agent could never rescue the sites it was best placed to
+    recognise.
+    """
+    from persianphish_detector.orchestrator import _observed_risk
+
+    quiet = {
+        "external_form_action_count": 0.0,
+        "suspicious_token_count": 0.0,
+        "password_input_count": 0.0,
+        "title_domain_token_overlap": 0.0,
+    }
+    assert not _observed_risk(quiet), "nothing was observed on the page"
+
+    review = AgentReview(
+        analysis_id="a", verdict_candidate="legitimate", risk_score=0.0,
+        confidence=0.94, reasons=["brand_recognised_as_official_domain"],
+    )
+    verdict, reasons = Detector._reconcile_agent(review, quiet, 0.90, _evidence())
+    assert verdict is Verdict.LEGITIMATE
+    assert "agent_advisory_legitimate_corroborated" in reasons
+
+
+def test_observed_risk_still_blocks_a_clearance() -> None:
+    """What was seen on the page keeps its veto."""
+    from persianphish_detector.orchestrator import _observed_risk
+
+    noisy = {
+        "external_form_action_count": 1.0,
+        "suspicious_token_count": 0.0,
+        "password_input_count": 0.0,
+        "title_domain_token_overlap": 0.0,
+    }
+    assert _observed_risk(noisy)
+    review = AgentReview(
+        analysis_id="a", verdict_candidate="legitimate", risk_score=0.0,
+        confidence=0.94, reasons=["brand_recognised_as_official_domain"],
+    )
+    verdict, _ = Detector._reconcile_agent(review, noisy, 0.10, _evidence())
+    assert verdict is Verdict.SUSPICIOUS
