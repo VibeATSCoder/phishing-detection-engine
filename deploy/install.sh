@@ -89,8 +89,18 @@ set -euo pipefail
 
 OWNER="${GITHUB_OWNER:-VibeATSCoder}"
 RAW="https://raw.githubusercontent.com/${OWNER}/phishing-detection-engine/main"
-INSTALL_DIR="${PWD}/persianphish"
+# Re-running from inside an existing install should update it, not nest a
+# second one inside it. Someone who has installed once and comes back to pick up
+# a fix naturally runs the command from the directory they are already in, and
+# got /home/you/persianphish/persianphish for it — a second copy that then
+# downloads everything again and leaves the first one stale.
+if [ -f "${PWD}/deploy/compose.images.yaml" ] || [ -f "${PWD}/deploy/.env" ]; then
+  INSTALL_DIR="${PWD}"
+else
+  INSTALL_DIR="${PWD}/persianphish"
+fi
 WITH_REFERENCES=0
+FETCH_INDEX=0
 DOWNLOAD_ONLY=0
 RECHECK=0
 # How the image artefacts are obtained. auto downloads them; local takes them
@@ -659,8 +669,12 @@ if [ "${WITH_REFERENCES}" -eq 0 ]; then
   mem_gb="$(host_memory_gb)"
   say ""
   say "The reference retrieval service compares a page against known-good"
-  say "originals. It is what lets the reviewer confirm brand impersonation"
-  say "rather than only suspect it."
+  say "originals, which sharpens the reviewer's judgement on pages it has"
+  say "seen something similar to."
+  say ""
+  say "It is no longer required to catch brand impersonation: the reviewer"
+  say "carries a table of well-known Iranian brands and their real domains,"
+  say "and convicts on that alone. Leaving this off costs you very little."
   case "${rag_local}" in
     image)     say "  the image is already loaded on this machine" ;;
     # Deliberately not "no download needed": this only sees that files of the
@@ -678,10 +692,7 @@ if [ "${WITH_REFERENCES}" -eq 0 ]; then
     # corpus; no release publishes it, so an operator who does not already have
     # one cannot obtain it by answering a prompt. Asking for a path without
     # saying so sent people looking for a file that was never on their machine.
-    say "  no index on this machine, and none is published with the release."
-    say "  The service needs a 3 GB Embedding_Index directory (block_index.parquet"
-    say "  and friends), copied from wherever it was built. Without it the service"
-    say "  cannot start, so answer no unless you already have one."
+    say "  no index here — it is published and can be downloaded (about 1 GB)."
   fi
   if [ "${mem_gb}" -gt 0 ] && [ "${mem_gb}" -lt 8 ]; then
     say "  warning: this host has ${mem_gb} GB of RAM and the service wants 8 GB."
@@ -692,13 +703,31 @@ if [ "${WITH_REFERENCES}" -eq 0 ]; then
   if [ "${rag_local}" != "none" ] && [ -n "${rag_index}" ]; then
     default="y"; prompt='  enable it? [Y/n]: '
   elif [ -z "${rag_index}" ]; then
-    default="n"; prompt='  enable it anyway, and give an index path? [y/N]: '
+    default="n"; prompt='  enable it, downloading the index? [y/N]: '
   else
     default="n"; prompt='  enable it? [y/N]: '
   fi
   case "$(ask "${prompt}" "${default}")" in
     y|Y|yes|YES)
       WITH_REFERENCES=1
+      if [ -z "${rag_index}" ]; then
+        # Offer the download first. Pointing at a copy already on the machine
+        # stays available below, because somebody who has one should not spend
+        # a gigabyte fetching the same thing again.
+        say ""
+        say "  The index is published as five parts totalling about 1 GB."
+        say "  It unpacks to roughly 1.8 GB under $(pwd)/Embedding_Index."
+        # Recorded, not done here: the fetch needs fetch_asset, which is
+        # defined further down with the rest of the download machinery. Bash
+        # resolves a function at the point of call, so doing it here would fail
+        # with "fetch_asset: command not found". discover_index looks in the
+        # install directory, so once it lands the configuration step finds it
+        # without being told.
+        case "$(ask '  download it now? [Y/n]: ' y)" in
+          n|N|no|NO) : ;;
+          *) FETCH_INDEX=1; rag_index="pending" ;;
+        esac
+      fi
       if [ -z "${rag_index}" ]; then
         while :; do
           answer="$(ask '  path to an Embedding_Index you already have (empty to skip): ' '')" \
@@ -1049,7 +1078,50 @@ if [ "${SOURCE_MODE}" = "manual" ]; then
   fi
 fi
 
+# Fetch and unpack the reference index.
+#
+# The index used to be undistributable: a 3 GB directory that existed only where
+# it was built, so enabling references was impossible for anyone who had not
+# built it themselves. Only three files in it are ever opened at runtime — the
+# embedding matrix, its block metadata, and the page table — and those pack to
+# about 1 GB, which is publishable. The 891 MB block_index.parquet and the
+# 333 MB bm25 pickle are build inputs and are deliberately not shipped.
+fetch_index() {
+  local parts="part00 part01 part02 part03 part04" part
+  local base="embedding-index-${RAG_VERSION}.tar.gz"
+  say "  fetching the index"
+  for part in ${parts}; do
+    fetch_asset phishing-rag-service "v${RAG_VERSION}" "${base}.${part}" || return 1
+  done
+  fetch_asset phishing-rag-service "v${RAG_VERSION}" "${base}.parts.sha256" || return 1
+  if command -v sha256sum >/dev/null 2>&1 && [ -f "${base}.parts.sha256" ]; then
+    say "  verifying the parts"
+    sha256sum -c "${base}.parts.sha256" >/dev/null 2>&1 || {
+      say "  the parts did not verify; delete them and try again"
+      return 1
+    }
+  fi
+  say "  unpacking (about 1.8 GB)"
+  mkdir -p Embedding_Index || return 1
+  # Streamed: joining to a single file first would need a second gigabyte of
+  # disk for no reason.
+  cat ${base}.part?? | tar -C Embedding_Index -xzf - || return 1
+  [ -f "Embedding_Index/_fast/block_emb.npy" ] || {
+    say "  the archive unpacked but the embedding matrix is not there"
+    return 1
+  }
+  rm -f ${base}.part?? "${base}.parts.sha256"
+  say "  index ready at $(pwd)/Embedding_Index"
+  return 0
+}
+
 step "images"
+if [ "${FETCH_INDEX:-0}" -eq 1 ]; then
+  if ! fetch_index; then
+    say "  the index could not be fetched, so references stay off"
+    WITH_REFERENCES=0
+  fi
+fi
 ensure_image "phishing-detection-engine:${DETECTOR_VERSION}" \
   phishing-detection-engine "v${DETECTOR_VERSION}" \
   "phishing-detection-engine-${DETECTOR_VERSION}.tar.gz"
