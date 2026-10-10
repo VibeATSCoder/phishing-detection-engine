@@ -20,8 +20,8 @@ services:
   rag:
     # Overridable, so this matches whatever image you actually loaded rather
     # than forcing a specific one:
-    #   RAG_VERSION=1.0.2 docker compose ... up -d
-    image: phishing-rag-service:${RAG_VERSION:-1.0.2}
+    #   RAG_VERSION=2.0.0 docker compose ... up -d
+    image: phishing-rag-service:${RAG_VERSION:-2.0.0}
     # Never reach for a registry: this image is not published to one, so a
     # missing tag otherwise fails with "pull access denied", which reads like an
     # authentication problem rather than "you have not loaded that version".

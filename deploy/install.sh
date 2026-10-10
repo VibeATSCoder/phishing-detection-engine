@@ -116,7 +116,7 @@ ARTEFACT_DIRS=()
 # cannot drift from the contract unnoticed.
 DETECTOR_VERSION="${DETECTOR_VERSION:-3.8.1}"
 REVIEW_VERSION="${REVIEW_VERSION:-1.11.0}"
-RAG_VERSION="${RAG_VERSION:-1.0.2}"
+RAG_VERSION="${RAG_VERSION:-2.0.0}"
 STACK_VERSION="${STACK_VERSION:-1.1.0}"
 
 while [ $# -gt 0 ]; do
@@ -593,13 +593,18 @@ discover_index() {
     "${PWD}/Embedding_Index" \
     "${HOME}/Embedding_Index" \
     /var/services/idk/Phishing_RAG/Phishing_RAG_S3_Output/Output/Embedding_Index \
+    /var/services/idk/Phishing_RAG_v2/Embedding_Index \
     /data/Embedding_Index \
     /opt/persianphish/Embedding_Index
   do
     [ -n "${candidate}" ] || continue
-    # block_index.parquet is the file the retriever opens first, so its presence
-    # is what makes a directory an index rather than a directory of that name.
-    if [ -f "${candidate}/block_index.parquet" ]; then
+    # A directory counts as an index when it has the page table and an embedding
+    # matrix in any supported layout: a v1 raw parquet, a v1 built cache, or a
+    # v2 root export. page_index.parquet is common to all three.
+    [ -f "${candidate}/page_index.parquet" ] || continue
+    if [ -f "${candidate}/block_embeddings.npy" ] \
+       || [ -f "${candidate}/_fast/block_emb.npy" ] \
+       || [ -f "${candidate}/block_index.parquet" ]; then
       printf '%s' "${candidate}"
       return 0
     fi
@@ -1060,12 +1065,12 @@ if [ "${SOURCE_MODE}" = "manual" ]; then
   fi
   if [ "${WITH_REFERENCES}" -eq 1 ] \
      && ! docker image inspect "phishing-rag-service:${RAG_VERSION}" >/dev/null 2>&1; then
-    for part in part00 part01 part02 parts.sha256; do
-      [ -f "phishing-rag-service-${RAG_VERSION}.tar.gz.${part}" ] && continue
-      say "  $(asset_url phishing-rag-service "v${RAG_VERSION}" \
-            "phishing-rag-service-${RAG_VERSION}.tar.gz.${part}")"
-      needed=$((needed + 1))
-    done
+    # The reference image ships in several parts plus a checksum file; their
+    # exact names are on the release page. Point there rather than guessing a
+    # count that changes between index sizes.
+    say "  the reference image parts and checksum, from the release page:"
+    say "  https://github.com/${OWNER}/phishing-rag-service/releases/tag/v${RAG_VERSION}"
+    needed=$((needed + 1))
   fi
   if [ "${needed}" -eq 0 ]; then
     say "  nothing to download — everything is already here or already loaded."
@@ -1087,29 +1092,37 @@ fi
 # about 1 GB, which is publishable. The 891 MB block_index.parquet and the
 # 333 MB bm25 pickle are build inputs and are deliberately not shipped.
 fetch_index() {
-  local parts="part00 part01 part02 part03 part04" part
-  local base="embedding-index-${RAG_VERSION}.tar.gz"
+  local base="embedding-index-${RAG_VERSION}.tar.gz" part
   say "  fetching the index"
-  for part in ${parts}; do
-    fetch_asset phishing-rag-service "v${RAG_VERSION}" "${base}.${part}" || return 1
-  done
+  # The checksum file names every part, so the count is read rather than
+  # hard-coded: a v1 index shipped five parts and a larger v2 index ships more,
+  # and nothing here needs to change when it does.
   fetch_asset phishing-rag-service "v${RAG_VERSION}" "${base}.parts.sha256" || return 1
-  if command -v sha256sum >/dev/null 2>&1 && [ -f "${base}.parts.sha256" ]; then
+  local parts
+  parts="$(awk '{print $2}' "${base}.parts.sha256" | sed "s#^\\*##")"
+  [ -n "${parts}" ] || { say "  the checksum file listed no parts"; return 1; }
+  for part in ${parts}; do
+    fetch_asset phishing-rag-service "v${RAG_VERSION}" "${part}" || return 1
+  done
+  if command -v sha256sum >/dev/null 2>&1; then
     say "  verifying the parts"
     sha256sum -c "${base}.parts.sha256" >/dev/null 2>&1 || {
       say "  the parts did not verify; delete them and try again"
       return 1
     }
   fi
-  say "  unpacking (about 1.8 GB)"
+  say "  unpacking"
   mkdir -p Embedding_Index || return 1
   # Streamed: joining to a single file first would need a second gigabyte of
   # disk for no reason.
   cat ${base}.part?? | tar -C Embedding_Index -xzf - || return 1
-  [ -f "Embedding_Index/_fast/block_emb.npy" ] || {
-    say "  the archive unpacked but the embedding matrix is not there"
+  # Either layout is valid: v1 builds a _fast/ cache, v2 exports the matrix at
+  # the index root as block_embeddings.npy.
+  if [ ! -f "Embedding_Index/_fast/block_emb.npy" ] \
+     && [ ! -f "Embedding_Index/block_embeddings.npy" ]; then
+    say "  the archive unpacked but no embedding matrix was found"
     return 1
-  }
+  fi
   rm -f ${base}.part?? "${base}.parts.sha256"
   say "  index ready at $(pwd)/Embedding_Index"
   return 0
@@ -1133,14 +1146,17 @@ if [ "${WITH_REFERENCES}" -eq 1 ]; then
   if docker image inspect "phishing-rag-service:${RAG_VERSION}" >/dev/null 2>&1; then
     echo "  have  phishing-rag-service:${RAG_VERSION}"
   else
-    # ~2.9 GB compressed, above the 2 GB per-asset limit, so it is published in
-    # parts and reassembled by the loader that ships beside them.
-    for part in part00 part01 part02; do
-      fetch_asset phishing-rag-service "v${RAG_VERSION}" \
-        "phishing-rag-service-${RAG_VERSION}.tar.gz.${part}"
-    done
+    # The image is above the 2 GB per-asset limit, so it is published in parts
+    # and reassembled by the loader that ships beside them. The checksum file
+    # names every part, so the count is read rather than hard-coded.
     fetch_asset phishing-rag-service "v${RAG_VERSION}" \
       "phishing-rag-service-${RAG_VERSION}.tar.gz.parts.sha256"
+    img_parts="$(awk '{print $2}' \
+      "phishing-rag-service-${RAG_VERSION}.tar.gz.parts.sha256" | sed "s#^\\*##")"
+    [ -n "${img_parts}" ] || die "the image checksum file listed no parts"
+    for part in ${img_parts}; do
+      fetch_asset phishing-rag-service "v${RAG_VERSION}" "${part}"
+    done
     fetch_asset phishing-rag-service "v${RAG_VERSION}" load_release.sh
     echo "  load  phishing-rag-service:${RAG_VERSION} (reassembling parts)"
     bash load_release.sh "phishing-rag-service-${RAG_VERSION}.tar.gz.part00" \
