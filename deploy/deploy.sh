@@ -23,7 +23,7 @@ set -euo pipefail
 readonly DETECTOR_VERSION="3.8.1"
 readonly REVIEW_VERSION="1.11.0"
 # Overridable from .env, so --with-references matches the image you loaded.
-RAG_VERSION="1.0.2"
+RAG_VERSION="2.0.0"
 readonly DETECTOR_IMAGE="phishing-detection-engine:${DETECTOR_VERSION}"
 readonly REVIEW_IMAGE="agentic-phishing-review:${REVIEW_VERSION}"
 RAG_IMAGE="phishing-rag-service:${RAG_VERSION}"
