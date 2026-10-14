@@ -39,8 +39,13 @@ services:
       RAG_DEFAULT_TOP_K: ${RAG_TOP_K:-3}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     ports:
-      # Loopback only. This answers questions about pages people visited.
-      - "127.0.0.1:${RAG_HOST_PORT:-8092}:8092"
+      # Loopback only. This answers questions about pages people visited, so it
+      # is sensitive. The detector reaches it over the compose network, so it
+      # needs no host exposure. It has its own RAG_BIND_HOST, defaulting to
+      # 127.0.0.1 and NOT inheriting BIND_HOST, so exposing the detector never
+      # exposes this too. Override it only to query the index directly, and set
+      # RAG_API_KEY if you do.
+      - "${RAG_BIND_HOST:-127.0.0.1}:${RAG_HOST_PORT:-8092}:8092"
     volumes:
       # Read-only: the service never writes to the index. Build its cache once
       # with `docker compose run --rm rag python scripts/build_index_cache.py`.

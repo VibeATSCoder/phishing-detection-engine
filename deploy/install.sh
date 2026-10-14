@@ -114,9 +114,15 @@ ARTEFACT_DIRS=()
 # Versions this stack releases as. deploy/COMPATIBILITY.json records the same
 # numbers and tests/test_release_contract.py asserts the two agree, so these
 # cannot drift from the contract unnoticed.
-DETECTOR_VERSION="${DETECTOR_VERSION:-3.8.1}"
+DETECTOR_VERSION="${DETECTOR_VERSION:-3.8.2}"
 REVIEW_VERSION="${REVIEW_VERSION:-1.11.0}"
 RAG_VERSION="${RAG_VERSION:-2.0.0}"
+# The reference *index* is data, not an image. It is published on the PUBLIC
+# detector repo so it downloads with no token, unlike the private
+# reference-service repo that ships the image. Override with RAG_INDEX_REPO /
+# RAG_INDEX_TAG, or point ASSET_BASE_URL at a mirror.
+RAG_INDEX_REPO="${RAG_INDEX_REPO:-phishing-detection-engine}"
+RAG_INDEX_TAG="${RAG_INDEX_TAG:-rag-index-${RAG_VERSION}}"
 STACK_VERSION="${STACK_VERSION:-1.1.0}"
 
 while [ $# -gt 0 ]; do
@@ -720,8 +726,8 @@ if [ "${WITH_REFERENCES}" -eq 0 ]; then
         # stays available below, because somebody who has one should not spend
         # a gigabyte fetching the same thing again.
         say ""
-        say "  The index is published as five parts totalling about 1 GB."
-        say "  It unpacks to roughly 1.8 GB under $(pwd)/Embedding_Index."
+        say "  The index download is about 1 GB, checksum-verified on arrival."
+        say "  It unpacks under $(pwd)/Embedding_Index."
         # Recorded, not done here: the fetch needs fetch_asset, which is
         # defined further down with the rest of the download machinery. Bash
         # resolves a function at the point of call, so doing it here would fail
@@ -743,13 +749,20 @@ if [ "${WITH_REFERENCES}" -eq 0 ]; then
             WITH_REFERENCES=0
             break
           fi
-          if [ -f "${answer%/}/block_index.parquet" ]; then
+          # Accept any supported layout, exactly as discover_index does: the
+          # page table plus an embedding matrix (v2 root export, v1 built
+          # cache, or v1 raw parquet). The old check demanded v1's
+          # block_index.parquet and so rejected a manually-downloaded v2 index.
+          if [ -f "${answer%/}/page_index.parquet" ] \
+             && { [ -f "${answer%/}/block_embeddings.npy" ] \
+                  || [ -f "${answer%/}/_fast/block_emb.npy" ] \
+                  || [ -f "${answer%/}/block_index.parquet" ]; }; then
             RAG_INDEX_HOST_PATH="$(cd -- "${answer}" && pwd)"
             export RAG_INDEX_HOST_PATH
             say "  using ${RAG_INDEX_HOST_PATH}"
             break
           fi
-          say "  that directory has no block_index.parquet in it"
+          say "  that does not look like an Embedding_Index (needs page_index.parquet and an embedding matrix)"
         done
       fi ;;
   esac
@@ -1097,12 +1110,12 @@ fetch_index() {
   # The checksum file names every part, so the count is read rather than
   # hard-coded: a v1 index shipped five parts and a larger v2 index ships more,
   # and nothing here needs to change when it does.
-  fetch_asset phishing-rag-service "v${RAG_VERSION}" "${base}.parts.sha256" || return 1
+  fetch_asset "${RAG_INDEX_REPO}" "${RAG_INDEX_TAG}" "${base}.parts.sha256" || return 1
   local parts
   parts="$(awk '{print $2}' "${base}.parts.sha256" | sed "s#^\\*##")"
   [ -n "${parts}" ] || { say "  the checksum file listed no parts"; return 1; }
   for part in ${parts}; do
-    fetch_asset phishing-rag-service "v${RAG_VERSION}" "${part}" || return 1
+    fetch_asset "${RAG_INDEX_REPO}" "${RAG_INDEX_TAG}" "${part}" || return 1
   done
   if command -v sha256sum >/dev/null 2>&1; then
     say "  verifying the parts"
@@ -1289,26 +1302,73 @@ if [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ]; then
     esac
   fi
 
-  # --- optional detector key ------------------------------------------------
+  # --- network exposure -----------------------------------------------------
+  # Where the detector's host port binds. Only the detector is offered here; the
+  # reviewer and RAG keep their own loopback default regardless (they are
+  # internal and the reviewer holds the model key). Default stays loopback.
+  exposed=0
   say ""
-  say "An API key on the detector itself is optional: it is published only on"
-  say "127.0.0.1, so an empty value is a reasonable choice on a single host."
-  say "Whatever you pick here is what the browser extension needs; leaving it"
-  say "open means the extension's API key field stays empty."
-  say "  1) leave it open (default)"
-  say "  2) generate one"
-  say "  3) I will supply my own"
+  say "Where should the detector's API be reachable?"
+  say "  1) this machine only — 127.0.0.1 (default, safest)"
+  say "  2) all interfaces — reachable from other machines by this host's IP"
   case "$(ask '  choice [1]: ' 1)" in
-    2) ppd_key="$(generate_key)"; set_env PPD_API_KEY "${ppd_key}"
+    2) set_env BIND_HOST "0.0.0.0"; exposed=1 ;;
+    *) set_env BIND_HOST "127.0.0.1" ;;
+  esac
+  if [ "${exposed}" -eq 1 ]; then
+    current_port="$(env_value PPD_HOST_PORT)"; current_port="${current_port:-8088}"
+    say ""
+    say "Which host port should it listen on?"
+    say "  80    plain HTTP — pick this if only port 80 is open to the server"
+    say "  8088  the usual default"
+    port="$(ask "  port [${current_port}]: " "${current_port}")"
+    set_env PPD_HOST_PORT "${port}"
+    say "  the API and its /docs page will be at http://<this-host-ip>:${port}/"
+    say "  (the reviewer and RAG stay on 127.0.0.1)"
+  fi
+
+  # --- detector API key -----------------------------------------------------
+  # The question and its recommendation flip with exposure: optional on
+  # loopback, strongly advised once the port faces a network.
+  say ""
+  ppd_action=open
+  if [ "${exposed}" -eq 1 ]; then
+    say "The detector is on a network interface, so it should carry an API key."
+    say "Anyone who can reach it can drive it, and each URL it inspects spends"
+    say "the reviewer's model budget — leaving it open here is not recommended."
+    say "  1) generate one (recommended)"
+    say "  2) I will supply my own"
+    say "  3) leave it open anyway"
+    case "$(ask '  choice [1]: ' 1)" in
+      2) ppd_action=supply ;;
+      3) ppd_action=open ;;
+      *) ppd_action=generate ;;
+    esac
+  else
+    say "An API key on the detector itself is optional: it is published only on"
+    say "127.0.0.1, so an empty value is a reasonable choice on a single host."
+    say "Whatever you pick here is what the browser extension needs; leaving it"
+    say "open means the extension's API key field stays empty."
+    say "  1) leave it open (default)"
+    say "  2) generate one"
+    say "  3) I will supply my own"
+    case "$(ask '  choice [1]: ' 1)" in
+      2) ppd_action=generate ;;
+      3) ppd_action=supply ;;
+      *) ppd_action=open ;;
+    esac
+  fi
+  case "${ppd_action}" in
+    generate) ppd_key="$(generate_key)"; set_env PPD_API_KEY "${ppd_key}"
        # Shown, not hidden. Unlike the other secrets this one has to be typed
        # into the browser extension by hand, and generating it silently left the
        # operator with a running stack and no way to connect to it.
        say "  generated — put this in the extension's API key field:"
        say "    ${ppd_key}"
        say "  (printed again by: bash deploy/deploy.sh --show-config)" ;;
-    3) supplied="$(ask_secret '  detector API key: ')" || supplied=""
+    supply) supplied="$(ask_secret '  detector API key: ')" || supplied=""
        [ -n "${supplied//[[:space:]]/}" ] && set_env PPD_API_KEY "${supplied}" ;;
-    *) set_env PPD_API_KEY "" ;;
+    open) set_env PPD_API_KEY "" ;;
   esac
 
   # --- VirusTotal -----------------------------------------------------------
