@@ -42,7 +42,14 @@ services:
       RAG_TIMEOUT_S: ${RAG_TIMEOUT_S:-15}
       RAG_TOP_K: ${RAG_TOP_K:-3}
     ports:
-      - "127.0.0.1:${REVIEW_HOST_PORT:-8090}:8090"
+      # Stays on loopback even when BIND_HOST exposes the detector: the reviewer
+      # is internal (the detector reaches it over the compose network) and it
+      # carries the OpenRouter key, so it must not face the outside. It has its
+      # own REVIEW_BIND_HOST, defaulting to 127.0.0.1 and NOT inheriting
+      # BIND_HOST, so exposing the detector never silently exposes this. Override
+      # it only if you deliberately want the reviewer reachable, and keep
+      # INTERNAL_REVIEW_API_KEY set.
+      - "${REVIEW_BIND_HOST:-127.0.0.1}:${REVIEW_HOST_PORT:-8090}:8090"
     volumes:
       - review-data:/data
     read_only: true
@@ -67,7 +74,7 @@ services:
       options: {max-size: "10m", max-file: "3"}
 
   detector:
-    image: phishing-detection-engine:${DETECTOR_VERSION:-3.8.1}
+    image: phishing-detection-engine:${DETECTOR_VERSION:-3.8.2}
     platform: linux/amd64
     pull_policy: never
     depends_on:
@@ -86,7 +93,10 @@ services:
       PPD_AGENT_POLL_INTERVAL_S: ${PPD_AGENT_POLL_INTERVAL_S:-0.25}
       PPD_API_KEY: ${PPD_API_KEY:-}
     ports:
-      - "127.0.0.1:${PPD_HOST_PORT:-8088}:8088"
+      # The detector is the public API. Default 127.0.0.1 is safe; set
+      # BIND_HOST=0.0.0.0 (or a specific interface IP) to reach it from another
+      # machine. When exposed, set PPD_API_KEY so it is not open to anyone.
+      - "${BIND_HOST:-127.0.0.1}:${PPD_HOST_PORT:-8088}:8088"
     volumes:
       - detector-data:/app/var
     read_only: true

@@ -7,8 +7,9 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from . import __version__
@@ -24,6 +25,13 @@ from .url_utils import canonical_url
 
 
 MAX_REQUEST_BODY_BYTES = 14_000_000
+
+# Declared purely so the OpenAPI schema advertises the key and the Swagger
+# UI shows an "Authorize" button that sends X-API-Key on "Try it out".
+# auto_error=False means it never rejects on its own: the optional_api_key
+# middleware below is the one place the key is actually checked, so open
+# paths stay open and behaviour is identical whether or not a key is set.
+api_key_scheme = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
 class BrowserEvidenceRequest(BaseModel):
@@ -131,7 +139,14 @@ def create_app(config: DetectorConfig | None = None) -> FastAPI:
 
     @app.middleware("http")
     async def optional_api_key(request: Request, call_next):
-        if selected_config.api_key and request.url.path not in {"/health", "/ready", "/metrics"}:
+        # The liveness/readiness/metrics probes and the API documentation are
+        # exempt from the key. The OpenAPI schema describes the shape of the API,
+        # not its data, so serving it is not a disclosure — and a detector put on
+        # a public address with a key set would otherwise 401 its own Swagger UI,
+        # defeating the reason the docs exist. Every endpoint that acts on a URL
+        # still requires the key.
+        _open_paths = {"/health", "/ready", "/metrics", "/docs", "/redoc", "/openapi.json"}
+        if selected_config.api_key and request.url.path not in _open_paths:
             supplied = request.headers.get("x-api-key", "")
             if not hmac.compare_digest(supplied, selected_config.api_key):
                 from fastapi.responses import JSONResponse
@@ -172,7 +187,7 @@ def create_app(config: DetectorConfig | None = None) -> FastAPI:
             },
         )
 
-    @app.post("/v1/detect")
+    @app.post("/v1/detect", dependencies=[Depends(api_key_scheme)])
     async def detect(payload: DetectRequest, request: Request) -> Dict[str, Any]:
         detector: Detector = request.app.state.detector
         browser_payload = payload.browser_evidence.model_dump() if payload.browser_evidence else None
@@ -180,7 +195,7 @@ def create_app(config: DetectorConfig | None = None) -> FastAPI:
         result = await detector.detect(payload.url, browser_payload, agent_references)
         return result.to_dict()
 
-    @app.get("/v1/detect/{request_id}")
+    @app.get("/v1/detect/{request_id}", dependencies=[Depends(api_key_scheme)])
     async def get_result(request_id: str, request: Request) -> Dict[str, Any]:
         if not request_id.isalnum() or len(request_id) > 64:
             raise HTTPException(status_code=400, detail="invalid request id")
@@ -190,7 +205,7 @@ def create_app(config: DetectorConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="result not found")
         return json.loads(path.read_text(encoding="utf-8"))
 
-    @app.get("/v1/review")
+    @app.get("/v1/review", dependencies=[Depends(api_key_scheme)])
     async def pending_review(request: Request, limit: int = Query(default=100, ge=1, le=500)) -> Dict[str, Any]:
         detector: Detector = request.app.state.detector
         rows = detector.review.pending(limit)
@@ -199,7 +214,7 @@ def create_app(config: DetectorConfig | None = None) -> FastAPI:
             row["evidence"] = json.loads(row.pop("evidence_json"))
         return {"items": rows, "count": len(rows)}
 
-    @app.post("/v1/review/{request_id}")
+    @app.post("/v1/review/{request_id}", dependencies=[Depends(api_key_scheme)])
     async def resolve_review(request_id: str, payload: ReviewResolution, request: Request) -> Dict[str, Any]:
         detector: Detector = request.app.state.detector
         if not detector.review.resolve(request_id, payload.label, payload.note):
