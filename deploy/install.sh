@@ -777,6 +777,24 @@ fi
   unset answer
 fi
 
+# References requested up front (--full / --with-references) rather than through
+# the prompt above. That prompt is the only thing that arranges an index, and it
+# runs only when it is the one turning references on -- so --full would wire up
+# the reviewer and then never obtain an index, and the deploy fell back to asking
+# for RAG_INDEX_HOST_PATH by hand. Arrange it here too, in every mode (so CI and
+# --no-prompt work): use an index already on the host, otherwise mark it for
+# download so the images step below fetches it.
+if [ "${WITH_REFERENCES}" -eq 1 ] && [ "${FETCH_INDEX:-0}" -eq 0 ] && [ -z "${RAG_INDEX_HOST_PATH:-}" ]; then
+  if rag_found="$(discover_index)"; then
+    RAG_INDEX_HOST_PATH="${rag_found}"
+    export RAG_INDEX_HOST_PATH
+    echo "  reference index found at ${rag_found}"
+  else
+    echo "  reference index not present here -- it will be downloaded (about 1 GB)"
+    FETCH_INDEX=1
+  fi
+fi
+
 # Files already downloaded are worth finding whatever the mode: an interrupted
 # run leaves them in the install directory, and the operator may simply have put
 # them where they ran the script from.
@@ -1458,14 +1476,20 @@ if [ "${WITH_REFERENCES}" -eq 1 ]; then
   value="$(sed -n 's/^RAG_INDEX_HOST_PATH=//p' deploy/.env | tail -n 1)"
   if [ -z "${value//[[:space:]]/}" ]; then
     if index_dir="$(discover_index)"; then
-      # sed with | as the delimiter, because the value is a path.
-      sed -i.bak "s|^RAG_INDEX_HOST_PATH=.*|RAG_INDEX_HOST_PATH=${index_dir}|" deploy/.env
-      rm -f deploy/.env.bak
+      # sed with | as the delimiter, because the value is a path. Append the key
+      # if the .env has no line to replace, otherwise the path is silently lost.
+      if grep -q '^RAG_INDEX_HOST_PATH=' deploy/.env; then
+        sed -i.bak "s|^RAG_INDEX_HOST_PATH=.*|RAG_INDEX_HOST_PATH=${index_dir}|" deploy/.env
+        rm -f deploy/.env.bak
+      else
+        printf 'RAG_INDEX_HOST_PATH=%s\n' "${index_dir}" >> deploy/.env
+      fi
       echo "  found the reference index at ${index_dir}"
     else
       missing="${missing} RAG_INDEX_HOST_PATH"
       echo "  no reference index found; set RAG_INDEX_HOST_PATH in deploy/.env" >&2
-      echo "  it is the Embedding_Index directory containing block_index.parquet" >&2
+      echo "  it is the Embedding_Index directory (block_embeddings.npy for v2," >&2
+      echo "  or block_index.parquet for v1), with page_index.parquet alongside." >&2
     fi
   fi
 fi
