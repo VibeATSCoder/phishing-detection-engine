@@ -20,8 +20,8 @@ services:
   rag:
     # Overridable, so this matches whatever image you actually loaded rather
     # than forcing a specific one:
-    #   RAG_VERSION=2.0.0 docker compose ... up -d
-    image: phishing-rag-service:${RAG_VERSION:-2.0.0}
+    #   RAG_VERSION=2.1.0 docker compose ... up -d
+    image: phishing-rag-service:${RAG_VERSION:-2.1.0}
     # Never reach for a registry: this image is not published to one, so a
     # missing tag otherwise fails with "pull access denied", which reads like an
     # authentication problem rather than "you have not loaded that version".
@@ -37,6 +37,15 @@ services:
       RAG_API_KEY: ${RAG_API_KEY:-}
       RAG_DEVICE: cpu
       RAG_DEFAULT_TOP_K: ${RAG_TOP_K:-3}
+      # Embedding backend. "local" (default) loads bge-m3 in-process (~2.8 GB).
+      # "api" delegates query embedding to an OpenAI-compatible endpoint (a few
+      # hundred MB), which must serve the same model the index was built with
+      # (BAAI/bge-m3, 1024-dim) -- the retriever checks the returned dimension.
+      RAG_EMBED_MODE: ${RAG_EMBED_MODE:-local}
+      RAG_EMBED_API_BASE: ${RAG_EMBED_API_BASE:-}
+      RAG_EMBED_API_KEY: ${RAG_EMBED_API_KEY:-}
+      RAG_EMBED_MODEL: ${RAG_EMBED_MODEL:-}
+      RAG_EMBED_TIMEOUT_S: ${RAG_EMBED_TIMEOUT_S:-15}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     ports:
       # Loopback only. This answers questions about pages people visited, so it
