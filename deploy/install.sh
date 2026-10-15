@@ -1057,6 +1057,27 @@ public, or set GITHUB_TOKEN and run again. If you already have the file, pass
 # Download and load one image, but only if it is not already present. This is
 # what makes re-running cheap: nothing re-downloads 699 MB to discover Docker
 # already has it.
+# Fetch a sha256 manifest and verify it really is one before anything parses it.
+# A stale or truncated copy left in the directory (for example a short error body
+# from an earlier run, when the asset did not yet exist) resumes into a
+# size-correct but corrupt file: curl -C - appends the real bytes after the junk,
+# the size then matches so the download is accepted, and `awk '{print $2}'` reads
+# a garbage part name that 404s and surfaces as a misleading "repo is private"
+# auth error. Validate the format; on corruption, delete and refetch once from
+# scratch -- which also self-heals a bad manifest a previous run left behind.
+fetch_manifest() { # repo tag name
+  local repo="$1" tag="$2" name="$3" tries
+  for tries in 1 2; do
+    fetch_asset "${repo}" "${tag}" "${name}" || return 1
+    if awk '{ if (NF!=2 || $1 !~ /^[0-9a-fA-F]{64}$/) bad=1 } END { exit (bad||NR==0)?1:0 }' "${name}"; then
+      return 0
+    fi
+    say "  ${name} is corrupted (a stale partial from an earlier run?) -- refetching it clean"
+    rm -f "${name}"
+    [ "${tries}" -eq 2 ] && { say "  ${name} still will not verify; delete it by hand and re-run"; return 1; }
+  done
+}
+
 ensure_image() { # image  repo tag artefact
   local image="$1" repo="$2" tag="$3" artefact="$4"
   if docker image inspect "${image}" >/dev/null 2>&1; then
@@ -1144,8 +1165,9 @@ fetch_index() {
   say "  fetching the index"
   # The checksum file names every part, so the count is read rather than
   # hard-coded: a v1 index shipped five parts and a larger v2 index ships more,
-  # and nothing here needs to change when it does.
-  fetch_asset "${RAG_INDEX_REPO}" "${RAG_INDEX_TAG}" "${base}.parts.sha256" || return 1
+  # and nothing here needs to change when it does. fetch_manifest guards against
+  # a corrupt/stale manifest being parsed into a garbage part name.
+  fetch_manifest "${RAG_INDEX_REPO}" "${RAG_INDEX_TAG}" "${base}.parts.sha256" || return 1
   local parts
   parts="$(awk '{print $2}' "${base}.parts.sha256" | sed "s#^\\*##")"
   [ -n "${parts}" ] || { say "  the checksum file listed no parts"; return 1; }
@@ -1197,8 +1219,9 @@ if [ "${WITH_REFERENCES}" -eq 1 ]; then
     # The image is above the 2 GB per-asset limit, so it is published in parts
     # and reassembled by the loader that ships beside them. The checksum file
     # names every part, so the count is read rather than hard-coded.
-    fetch_asset phishing-rag-service "v${RAG_VERSION}" \
-      "phishing-rag-service-${RAG_VERSION}.tar.gz.parts.sha256"
+    fetch_manifest phishing-rag-service "v${RAG_VERSION}" \
+      "phishing-rag-service-${RAG_VERSION}.tar.gz.parts.sha256" \
+      || die "the reference image checksum file could not be fetched or is corrupt"
     img_parts="$(awk '{print $2}' \
       "phishing-rag-service-${RAG_VERSION}.tar.gz.parts.sha256" | sed "s#^\\*##")"
     [ -n "${img_parts}" ] || die "the image checksum file listed no parts"
