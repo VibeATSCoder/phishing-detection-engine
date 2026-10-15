@@ -1085,6 +1085,15 @@ if [ "${SOURCE_MODE}" = "manual" ]; then
     say "  https://github.com/${OWNER}/phishing-rag-service/releases/tag/v${RAG_VERSION}"
     needed=$((needed + 1))
   fi
+  if [ "${FETCH_INDEX:-0}" -eq 1 ]; then
+    # The index also ships as several parts plus a checksum file, on the public
+    # detector repo (no sign-in needed for these). Point at the release page
+    # rather than guessing a count that changes between index sizes. Each part is
+    # still asked for in turn by fetch_index below, exactly like the images.
+    say "  the reference index parts and checksum, from the release page:"
+    say "  https://github.com/${OWNER}/${RAG_INDEX_REPO}/releases/tag/${RAG_INDEX_TAG}"
+    needed=$((needed + 1))
+  fi
   if [ "${needed}" -eq 0 ]; then
     say "  nothing to download — everything is already here or already loaded."
   else
