@@ -119,13 +119,15 @@ ARTEFACT_DIRS=()
 # cannot drift from the contract unnoticed.
 DETECTOR_VERSION="${DETECTOR_VERSION:-3.8.2}"
 REVIEW_VERSION="${REVIEW_VERSION:-1.11.0}"
-RAG_VERSION="${RAG_VERSION:-2.0.0}"
-# The reference *index* is data, not an image. It is published on the PUBLIC
-# detector repo so it downloads with no token, unlike the private
-# reference-service repo that ships the image. Override with RAG_INDEX_REPO /
-# RAG_INDEX_TAG, or point ASSET_BASE_URL at a mirror.
+RAG_VERSION="${RAG_VERSION:-2.1.0}"
+# The reference *index* is data, versioned independently of the service image:
+# the 2.0.0 index works unchanged with the 2.1.0 service. It is published on the
+# PUBLIC detector repo so it downloads with no token, unlike the private
+# reference-service repo that ships the image. Override with RAG_INDEX_VERSION /
+# RAG_INDEX_REPO / RAG_INDEX_TAG, or point ASSET_BASE_URL at a mirror.
+RAG_INDEX_VERSION="${RAG_INDEX_VERSION:-2.0.0}"
 RAG_INDEX_REPO="${RAG_INDEX_REPO:-phishing-detection-engine}"
-RAG_INDEX_TAG="${RAG_INDEX_TAG:-rag-index-${RAG_VERSION}}"
+RAG_INDEX_TAG="${RAG_INDEX_TAG:-rag-index-${RAG_INDEX_VERSION}}"
 STACK_VERSION="${STACK_VERSION:-1.1.0}"
 
 while [ $# -gt 0 ]; do
@@ -1179,7 +1181,7 @@ fi
 # about 1 GB, which is publishable. The 891 MB block_index.parquet and the
 # 333 MB bm25 pickle are build inputs and are deliberately not shipped.
 fetch_index() {
-  local base="embedding-index-${RAG_VERSION}.tar.gz" part
+  local base="embedding-index-${RAG_INDEX_VERSION}.tar.gz" part
   say "  fetching the index"
   # The checksum file names every part, so the count is read rather than
   # hard-coded: a v1 index shipped five parts and a larger v2 index ships more,
@@ -1302,11 +1304,13 @@ if [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ]; then
   say ""
   say "The review agent's language model provider."
   say "  1) https://openrouter.ai/api/v1        OpenRouter (default)"
-  say "  2) https://api.openai.com/v1           OpenAI-compatible endpoint"
-  say "  3) something else — a gateway or proxy you run"
+  say "  2) https://api.avalai.ir/v1            AvalAI"
+  say "  3) https://api.openai.com/v1           OpenAI-compatible endpoint"
+  say "  4) something else — a gateway or proxy you run"
   case "$(ask '  choice [1]: ' 1)" in
-    2) base_url="https://api.openai.com/v1" ;;
-    3) base_url="$(ask '  base URL: ' "${current_base}")" ;;
+    2) base_url="https://api.avalai.ir/v1" ;;
+    3) base_url="https://api.openai.com/v1" ;;
+    4) base_url="$(ask '  base URL: ' "${current_base}")" ;;
     *) base_url="https://openrouter.ai/api/v1" ;;
   esac
   set_env OPENROUTER_BASE_URL "${base_url}"
@@ -1447,6 +1451,45 @@ if [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ]; then
     open) set_env PPD_API_KEY "" ;;
   esac
 
+  # --- reference embedding backend -----------------------------------------
+  # Local loads bge-m3 in the container (~2.8 GB RAM). API delegates embedding to
+  # an OpenAI-compatible endpoint (a few hundred MB), which must serve the same
+  # model the index was built with (BAAI/bge-m3, 1024-dim) or retrieval fails a
+  # dimension check at query time.
+  if [ "${WITH_REFERENCES}" -eq 1 ]; then
+    say ""
+    say "How should the reference service embed queries to search the index?"
+    say "  1) locally — loads bge-m3 in the container (~2.8 GB RAM) (default)"
+    say "  2) via an API — ~1.5 GB RAM (drops the 2.2 GB model; the ~1 GB index"
+    say "     still memory-maps). The endpoint must serve the same model the"
+    say "     index was built with (BAAI/bge-m3, 1024-dim)."
+    case "$(ask '  choice [1]: ' 1)" in
+      2)
+        set_env RAG_EMBED_MODE "api"
+        emb_base_default="$(env_value OPENROUTER_BASE_URL)"
+        emb_base_default="${emb_base_default:-https://api.avalai.ir/v1}"
+        emb_base="$(ask "  embeddings base URL [${emb_base_default}]: " "${emb_base_default}")"
+        set_env RAG_EMBED_API_BASE "${emb_base}"
+        emb_model="$(ask '  embedding model name on that endpoint [bge-m3]: ' 'bge-m3')"
+        set_env RAG_EMBED_MODEL "${emb_model}"
+        say ""
+        say "  embeddings API key — leave empty to reuse the review agent's key"
+        emb_key="$(ask_secret '  embeddings API key: ')" || emb_key=""
+        if [ -n "${emb_key//[[:space:]]/}" ]; then
+          set_env RAG_EMBED_API_KEY "${emb_key}"
+        else
+          set_env RAG_EMBED_API_KEY "$(env_value OPENROUTER_API_KEY)"
+          say "  reusing the review agent's key"
+        fi
+        say "  reference embedding: ${emb_base} (model ${emb_model})"
+        say "  if that model is not bge-m3, retrieval fails the 1024-dim check"
+        ;;
+      *)
+        set_env RAG_EMBED_MODE "local"
+        ;;
+    esac
+  fi
+
   # --- VirusTotal -----------------------------------------------------------
   # Collected here because this is where an operator sets the stack up, but it
   # belongs to the intelligence monitor rather than to either service started
@@ -1462,7 +1505,7 @@ if [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ]; then
     say "  saved for the monitor"
   fi
 
-  unset api_key existing_key existing_review supplied vt_key ppd_key
+  unset api_key existing_key existing_review supplied vt_key ppd_key emb_base emb_base_default emb_model emb_key
   say ""
   say "  deploy/.env written"
 fi
