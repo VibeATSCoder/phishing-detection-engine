@@ -1460,8 +1460,9 @@ if [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ]; then
     say ""
     say "How should the reference service embed queries to search the index?"
     say "  1) locally — loads bge-m3 in the container (~2.8 GB RAM) (default)"
-    say "  2) via an API — a few hundred MB RAM, but the endpoint must serve the"
-    say "     same model the index was built with (BAAI/bge-m3, 1024-dim)"
+    say "  2) via an API — ~1.5 GB RAM (drops the 2.2 GB model; the ~1 GB index"
+    say "     still memory-maps). The endpoint must serve the same model the"
+    say "     index was built with (BAAI/bge-m3, 1024-dim)."
     case "$(ask '  choice [1]: ' 1)" in
       2)
         set_env RAG_EMBED_MODE "api"

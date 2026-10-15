@@ -38,8 +38,9 @@ services:
       RAG_DEVICE: cpu
       RAG_DEFAULT_TOP_K: ${RAG_TOP_K:-3}
       # Embedding backend. "local" (default) loads bge-m3 in-process (~2.8 GB).
-      # "api" delegates query embedding to an OpenAI-compatible endpoint (a few
-      # hundred MB), which must serve the same model the index was built with
+      # "api" delegates query embedding to an OpenAI-compatible endpoint: drops
+      # the 2.2 GB model, leaving ~1.5 GB (the ~1 GB memory-mapped index plus
+      # runtime). It must serve the same model the index was built with
       # (BAAI/bge-m3, 1024-dim) -- the retriever checks the returned dimension.
       RAG_EMBED_MODE: ${RAG_EMBED_MODE:-local}
       RAG_EMBED_API_BASE: ${RAG_EMBED_API_BASE:-}
