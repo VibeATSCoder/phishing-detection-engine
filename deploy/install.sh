@@ -36,6 +36,9 @@
 #   bash install.sh -i                   ask, then do it
 #   bash install.sh --artefact-dir ~/dl  use files already downloaded to ~/dl
 #   bash install.sh --manual             print each link and wait while you fetch it
+#   bash install.sh --token ghp_xxx      download with this token; if any file fails
+#                                        to fetch, it offers to let you grab that one
+#                                        by hand, then continues
 #
 # --artefact-dir may be given more than once, and is searched before anything is
 # downloaded, so a file you already have is never fetched twice.
@@ -135,6 +138,7 @@ while [ $# -gt 0 ]; do
     --no-install) NO_INSTALL=1; shift ;;
     -i|--interactive) INTERACTIVE=1; shift ;;
     --manual) SOURCE_MODE="manual"; shift ;;
+    --token) GITHUB_TOKEN="${2:?--token needs a value}"; export GITHUB_TOKEN; shift 2 ;;
     --artefact-dir)
       ARTEFACT_DIRS+=("${2:?--artefact-dir needs a path}")
       SOURCE_MODE="local"; shift 2 ;;
@@ -635,7 +639,8 @@ if [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ] \
    && { [ "${INTERACTIVE}" -eq 1 ] || [ "${SOURCE_MODE}" = "auto" ]; }; then
   say ""
   say "How should the images be provided?"
-  say "  1) Download them now from the GitHub releases   (default)"
+  say "  1) Download them now from the GitHub releases   (default; asks for a"
+  say "     token if a repo is private, and offers manual download if one fails)"
   say "  2) Use files I have already downloaded          (I will give the directory)"
   say "  3) Show me each link and wait while I download  (for a browser-only network)"
   case "$(ask '  choice [1]: ' 1)" in
@@ -1017,14 +1022,35 @@ public, or set GITHUB_TOKEN and run again. If you already have the file, pass
 
   # stderr is deliberately not redirected: that is where curl draws the progress
   # bar, and the operator needs to see a multi-hundred-megabyte transfer moving.
-  curl -fL -C - --connect-timeout 20 --retry 10 --retry-delay 5 --retry-all-errors --progress-bar \
-    ${headers[@]+"${headers[@]}"} -o "${name}" "${url}" \
-    || die "download of ${name} failed. Re-run to resume from where it stopped."
+  # On failure the install does not stop: when there is a terminal, offer to
+  # fetch this one file by hand and carry on, so the token path and the manual
+  # path compose -- "download with my token, and if a file fails, let me grab
+  # that one in a browser." prompt_for_asset returns 0 once the file is placed by
+  # hand, or 1 if the operator asks to retry the automatic fetch (loops here).
+  local dl_ok=0 dl_attempt
+  for dl_attempt in 1 2 3; do
+    if curl -fL -C - --connect-timeout 20 --retry 10 --retry-delay 5 --retry-all-errors --progress-bar \
+         ${headers[@]+"${headers[@]}"} -o "${name}" "${url}"; then
+      dl_ok=1; break
+    fi
+    if [ "${SOURCE_MODE}" != "manual" ] && [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ]; then
+      say "  automatic download of ${name} failed."
+      prompt_for_asset "${repo}" "${tag}" "${name}" "${expected}" && return 0
+      continue
+    fi
+    break
+  done
+  [ "${dl_ok}" -eq 1 ] || die "download of ${name} failed. Re-run to resume, or re-run with --manual."
 
   if [ -n "${expected}" ]; then
     local_size="$(stat -c%s "${name}" 2>/dev/null || echo 0)"
-    [ "${local_size}" = "${expected}" ] \
-      || die "${name} is ${local_size} bytes but should be ${expected}. Re-run to resume."
+    if [ "${local_size}" != "${expected}" ]; then
+      if [ "${SOURCE_MODE}" != "manual" ] && [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ]; then
+        say "  ${name} arrived incomplete (${local_size} of ${expected} bytes)."
+        prompt_for_asset "${repo}" "${tag}" "${name}" "${expected}" && return 0
+      fi
+      die "${name} is ${local_size} bytes but should be ${expected}. Re-run to resume."
+    fi
   fi
 }
 
