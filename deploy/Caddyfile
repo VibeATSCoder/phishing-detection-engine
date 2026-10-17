@@ -1,0 +1,12 @@
+# Auto-HTTPS reverse proxy for the detector. Caddy obtains and renews a
+# Let's Encrypt certificate for $CADDY_DOMAIN on first start (ports 80 + 443 must
+# be reachable from the internet), terminates TLS, and forwards to the detector
+# over the compose network. The detector itself then needs no public port and
+# should bind loopback (BIND_HOST=127.0.0.1).
+#
+# The browser extension can only reach an HTTPS (or loopback) backend, which is
+# the whole reason this exists: point the extension at https://$CADDY_DOMAIN.
+{$CADDY_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy detector:8088
+}
