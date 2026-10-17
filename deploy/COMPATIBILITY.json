@@ -4,8 +4,8 @@
   "components": {
     "extension": {
       "repository": "https://github.com/VibeATSCoder/phishingshield-persian",
-      "version": "3.7.2",
-      "tag": "v3.7.2"
+      "version": "3.7.3",
+      "tag": "v3.7.3"
     },
     "detector": {
       "repository": "https://github.com/VibeATSCoder/phishing-detection-engine",
