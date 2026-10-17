@@ -20,7 +20,7 @@ def test_component_versions_and_compose_are_synchronized():
     # Versioned independently of the detector; the manifest is the authority
     # and test_recorded_extension_version_matches_the_extension_repository
     # compares against it.
-    assert contract["components"]["extension"]["version"] == "3.7.0"
+    assert contract["components"]["extension"]["version"] == "3.7.1"
     assert contract["components"]["reviewer"]["version"] == "1.11.0"
     # Reference retrieval is optional: the reviewer runs without it and simply
     # supplies no references, so a deployment lacking it is degraded rather than
