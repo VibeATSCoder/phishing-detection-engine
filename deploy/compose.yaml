@@ -65,12 +65,12 @@ services:
         max-file: "3"
 
   detector:
-    image: phishing-detection-engine:3.8.2-integrated
+    image: phishing-detection-engine:3.8.3-integrated
     build:
       context: ..
       dockerfile: Dockerfile
       args:
-        APP_VERSION: "3.8.2"
+        APP_VERSION: "3.8.3"
     depends_on:
       review:
         condition: service_healthy

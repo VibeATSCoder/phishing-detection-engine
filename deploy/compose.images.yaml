@@ -39,7 +39,7 @@ services:
       # reference_service_configured false.
       RAG_BASE_URL: ${RAG_BASE_URL:-}
       RAG_API_KEY: ${RAG_API_KEY:-}
-      RAG_TIMEOUT_S: ${RAG_TIMEOUT_S:-15}
+      RAG_TIMEOUT_S: ${RAG_TIMEOUT_S:-30}
       RAG_TOP_K: ${RAG_TOP_K:-3}
     ports:
       # Stays on loopback even when BIND_HOST exposes the detector: the reviewer
@@ -74,7 +74,7 @@ services:
       options: {max-size: "10m", max-file: "3"}
 
   detector:
-    image: phishing-detection-engine:${DETECTOR_VERSION:-3.8.2}
+    image: phishing-detection-engine:${DETECTOR_VERSION:-3.8.3}
     platform: linux/amd64
     pull_policy: never
     depends_on:

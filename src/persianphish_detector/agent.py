@@ -118,6 +118,8 @@ class AgentReview:
     reasons: list[str] = field(default_factory=list)
     limitations: list[str] = field(default_factory=list)
     model: str = ""
+    references_retrieved: int = 0
+    reference_matches: list[Dict[str, Any]] = field(default_factory=list)
 
     def audit_summary(self) -> Dict[str, Any]:
         return {
@@ -131,6 +133,12 @@ class AgentReview:
             "reasons": list(self.reasons),
             "limitations": list(self.limitations),
             "model": self.model,
+            # What the reference-retrieval (RAG) step found for this page: how
+            # many references came back and the best few with their scores. Empty
+            # with references_retrieved 0 means retrieval was off or returned
+            # nothing; the verdict then rests on the non-reference evidence.
+            "references_retrieved": self.references_retrieved,
+            "reference_matches": list(self.reference_matches),
         }
 
 
@@ -169,6 +177,48 @@ def _bounded_strings(value: Any, *, limit: int, item_limit: int) -> list[str]:
         if text not in result:
             result.append(text)
     return result
+
+
+def _bounded_reference_matches(value: Any, *, limit: int = 5) -> list[Dict[str, Any]]:
+    """Compact, typed view of the reviewer's per-reference comparison.
+
+    One entry per reference the retrieval service returned (best first), carrying
+    what the index matched and how closely. The reviewer already sanitises these;
+    we re-extract a known subset so the detector's response surface stays bounded
+    and self-describing rather than forwarding an open dict.
+    """
+    if not isinstance(value, list):
+        return []
+
+    def _num(item: Mapping[str, Any], key: str) -> Optional[float]:
+        raw = item.get(key)
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            return None
+        f = float(raw)
+        if f != f:  # NaN
+            return None
+        return round(max(0.0, min(1.0, f)), 4)
+
+    out: list[Dict[str, Any]] = []
+    for item in value[:limit]:
+        if not isinstance(item, Mapping):
+            continue
+        codes_raw = item.get("evidence_codes", [])
+        codes = (
+            [str(c)[:80] for c in codes_raw[:20]] if isinstance(codes_raw, list) else []
+        )
+        out.append(
+            {
+                "official_url": str(item.get("official_url", ""))[:2048],
+                "retrieval_score": _num(item, "retrieval_score"),
+                "reference_quality": _num(item, "reference_quality"),
+                "overall_similarity": _num(item, "overall_similarity"),
+                "text_similarity": _num(item, "text_similarity"),
+                "domain_match": bool(item.get("domain_match")),
+                "evidence_codes": codes,
+            }
+        )
+    return out
 
 
 def _finite_probability(value: Any, *, nullable: bool = False) -> Optional[float]:
@@ -421,4 +471,10 @@ class AgentClient:
             reasons=_bounded_strings(result.get("reasons", []), limit=50, item_limit=160),
             limitations=_bounded_strings(result.get("limitations", []), limit=30, item_limit=200),
             model=model,
+            references_retrieved=(
+                len(result["reference_matches"])
+                if isinstance(result.get("reference_matches"), list)
+                else 0
+            ),
+            reference_matches=_bounded_reference_matches(result.get("reference_matches", []), limit=5),
         )

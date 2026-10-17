@@ -368,3 +368,54 @@ async def test_detector_does_not_call_agent_when_crawl_failed(tmp_path: Path):
     result = await detector.detect("https://blocked.example/")
     assert result.verdict == Verdict.CRAWL_FAILED
     assert agent.calls == []
+
+
+def test_reference_matches_are_surfaced_in_the_agent_review():
+    """The RAG reference comparison the reviewer computes must reach the
+    detector's response, so an operator can see what the index matched."""
+    result = completed_result(
+        verdict_candidate="phishing",
+        risk_score=0.9,
+        confidence=0.9,
+        reference_matches=[
+            {
+                "reference_id": "rag_0_x",
+                "official_url": "https://digikala.com/",
+                "retrieval_score": 0.7461,
+                "reference_quality": 0.52,
+                "overall_similarity": 0.41,
+                "text_similarity": 0.33,
+                "domain_match": False,
+                "host_match": False,
+                "content_sha256": "deadbeef",
+                "evidence_codes": ["brand_token_domain_mismatch"],
+            },
+            {
+                "reference_id": "rag_1_y",
+                "official_url": "https://dvolt.ir/",
+                "retrieval_score": 0.7312,
+                "reference_quality": 0.30,
+                "overall_similarity": 0.22,
+                "domain_match": False,
+                "evidence_codes": [],
+            },
+        ],
+    )
+    review = AgentClient._parse_result("abc123", result)
+    summary = review.audit_summary()
+    assert summary["references_retrieved"] == 2
+    assert [m["official_url"] for m in summary["reference_matches"]] == [
+        "https://digikala.com/",
+        "https://dvolt.ir/",
+    ]
+    assert summary["reference_matches"][0]["retrieval_score"] == 0.7461
+    assert summary["reference_matches"][0]["evidence_codes"] == ["brand_token_domain_mismatch"]
+    # The compact view must not forward raw/unbounded fields like content_sha256.
+    assert "content_sha256" not in summary["reference_matches"][0]
+
+
+def test_absent_reference_matches_mean_zero_retrieved():
+    review = AgentClient._parse_result("abc123", completed_result())
+    summary = review.audit_summary()
+    assert summary["references_retrieved"] == 0
+    assert summary["reference_matches"] == []
