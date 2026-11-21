@@ -84,6 +84,11 @@ class DetectRequest(BaseModel):
     url: str = Field(min_length=1, max_length=8192)
     browser_evidence: Optional[BrowserEvidenceRequest] = None
     agent_references: List[AgentReferenceRequest] = Field(default_factory=list, max_length=3)
+    #: Per-request override for the optional JEV screener. null = follow the
+    #: service config; false = skip it; true = request screening.
+    use_jev: Optional[bool] = None
+    #: False skips the RF/TCN ensemble. True uses it when enabled by the service.
+    use_rf: Optional[bool] = None
 
     @model_validator(mode="after")
     def validate_total_reference_size(self) -> "DetectRequest":
@@ -163,6 +168,10 @@ def create_app(config: DetectorConfig | None = None) -> FastAPI:
             "model_loaded": detector.artifact is not None,
             "model_version": detector.artifact.model_version if detector.artifact else None,
             "tcn_loaded": detector.tcn is not None,
+            "fast_models_enabled": selected_config.fast_models_enabled,
+            "jev_configured": detector.jev is not None or detector.jev_local is not None,
+            "jev_local_configured": detector.jev_local is not None,
+            "jev_default_enabled": selected_config.jev_enabled,
             "policy_production_ready": detector.artifact.policy.production_ready if detector.artifact else False,
             "agent_configured": detector.agent is not None,
             "browser_enabled": detector.browser is not None,
@@ -173,8 +182,11 @@ def create_app(config: DetectorConfig | None = None) -> FastAPI:
         detector: Detector = request.app.state.detector
         model_ready = detector.artifact is not None
         tcn_ready = detector.tcn is not None
-        agent_ready = await detector.agent.ready() if detector.agent else True
-        ready_state = model_ready and tcn_ready and agent_ready
+        fast_ready = (model_ready and tcn_ready) or not selected_config.fast_models_enabled
+        agent_ready = (
+            await detector.agent.ready() if detector.agent else selected_config.fast_models_enabled
+        )
+        ready_state = fast_ready and agent_ready
         return JSONResponse(
             status_code=200 if ready_state else 503,
             content={
@@ -182,6 +194,10 @@ def create_app(config: DetectorConfig | None = None) -> FastAPI:
                 "service_version": __version__,
                 "model_loaded": model_ready,
                 "tcn_loaded": tcn_ready,
+                "fast_models_enabled": selected_config.fast_models_enabled,
+                "jev_configured": detector.jev is not None or detector.jev_local is not None,
+                "jev_local_configured": detector.jev_local is not None,
+                "jev_default_enabled": selected_config.jev_enabled,
                 "agent_configured": detector.agent is not None,
                 "agent_ready": agent_ready,
             },
@@ -192,7 +208,10 @@ def create_app(config: DetectorConfig | None = None) -> FastAPI:
         detector: Detector = request.app.state.detector
         browser_payload = payload.browser_evidence.model_dump() if payload.browser_evidence else None
         agent_references = [item.model_dump(mode="json") for item in payload.agent_references]
-        result = await detector.detect(payload.url, browser_payload, agent_references)
+        result = await detector.detect(
+            payload.url, browser_payload, agent_references,
+            use_jev=payload.use_jev, use_rf=payload.use_rf,
+        )
         return result.to_dict()
 
     @app.get("/v1/detect/{request_id}", dependencies=[Depends(api_key_scheme)])

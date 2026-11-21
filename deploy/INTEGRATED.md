@@ -118,6 +118,75 @@ enable backend review, use `http://127.0.0.1:8088`, and enter the same
 `PPD_API_KEY` configured here. The extension sends only suspicious URLs and
 never sends page HTML, cookies, headers, or form values.
 
+## Optional JEV screening
+
+Set these values in `deploy/.env` to run the screener by default:
+
+```dotenv
+PPD_JEV_ENABLED=1
+PPD_JEV_BASE_URL=https://provider.example/v1
+PPD_JEV_MODEL=your-model
+PPD_JEV_API_KEY=
+```
+
+The endpoint must implement OpenAI-compatible chat completions and return the
+JEV score object requested by the detector's prompt. The detector sends a host,
+bounded page text and a summary of structural signals. A CLEF or other custom
+model can sit behind an endpoint that translates its output to that contract.
+
+Set `PPD_FAST_MODELS_ENABLED=0` for JEV followed by deep review without RF/TCN.
+The running Compose stack must have a reachable reviewer, with RAG configured
+if reference retrieval is desired. A request to `POST /v1/detect` can use
+`"use_rf": false` to skip RF/TCN for that call and `"use_jev": true` to select
+the configured screener. Omit either key to use the service default.
+
+With RF/TCN enabled, a requested screen checks fast clearances before they
+reach the user. It sends high risk, low confidence, ambiguous labels and
+provider failures to review. With RF/TCN skipped, usable pages go to review
+by default. The separate `PPD_JEV_SHORT_CIRCUIT_LEGIT` option allows standalone
+low-risk clears after validation. Confirmed threat intelligence keeps priority
+and unusable crawl evidence yields `crawl_failed`.
+
+Read category scores, confidence, model and status under `evidence_summary.jev`.
+If RF/TCN did not run, its `model_scores` are null and the top-level
+`risk_score` is the neutral fallback 0.5 unless a configured local JEV model
+issued the terminal phishing verdict.
+
+For offline JEV scoring, set `PPD_JEV_LOCAL_MODEL_PATH` to the trusted model
+artifact. The local model can run alone or before the configured provider. To
+use it in a container, include the artifact in the detector image or mount it
+read-only at that container path. The detector reports the model result under
+`evidence_summary.jev_local`, separately from the RF/TCN and provider scores.
+
+The local model sends risky and failed scores to review by default. It does
+not issue standalone clearances. `PPD_JEV_LOCAL_AUTO_FLAG=1` allows it to issue
+terminal phishing verdicts above its saved threshold. Evaluate false positives
+on representative data before enabling that option.
+
+To enable the local guard by default once the artifact is available inside the
+detector container:
+
+```dotenv
+PPD_JEV_ENABLED=1
+PPD_JEV_LOCAL_MODEL_PATH=/app/artifacts/v3/jev_local_isolated.joblib
+PPD_JEV_LOCAL_AUTO_FLAG=0
+```
+
+Train an artifact from the frozen feature dataset and verify its thresholds on
+the separate test split:
+
+```bash
+PYTHONPATH=src python scripts/train_local_jev.py --output /path/to/jev_local_v1.joblib
+PYTHONPATH=src python scripts/evaluate_fast_stage.py --local-jev /path/to/jev_local_v1.joblib
+```
+
+Use `PPD_MODEL_PATH` for the local RF/TCN bundle, `PPD_AGENT_BASE_URL` for the
+reviewer service, and `OPENROUTER_BASE_URL` / `OPENROUTER_MODEL` for the
+reviewer's LLM. Set `RAG_BASE_URL` on the reviewer to choose the references
+service. Its embedding endpoint and model are configurable through
+`RAG_EMBED_API_BASE` and `RAG_EMBED_MODEL`. The embedding model must match
+the selected reference index.
+
 ## Verify without spending OpenRouter tokens
 
 The test override replaces OpenRouter with a deterministic in-container test double while exercising RF, TCN, API validation, async submit/poll, evidence extraction, both agent passes, reconciliation, and persistence:

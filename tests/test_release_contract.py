@@ -1,5 +1,7 @@
 import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -62,14 +64,24 @@ def test_recorded_extension_version_matches_the_extension_repository():
 
     The extension version was once recorded here as one number while the
     shipped manifest said another. Nothing noticed, because the assertion above
-    and the contract were the same stale constant restating each other. The manifest is the
-    authority; this compares against it whenever the extension is checked out
-    beside this repository, and skips when it is not.
+    and the contract were the same stale constant restating each other.
+    Compare with the upstream extension manifest when its main ref is available.
+    A feature branch checkout does not change the released stack contract.
     """
     manifest_path = ROOT.parent / "phishingshield-persian" / "manifest.json"
     if not manifest_path.is_file():
         pytest.skip("extension repository not checked out beside this one")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if (manifest_path.parent / ".git").exists() and shutil.which("git"):
+        upstream = subprocess.run(
+            ["git", "show", "refs/remotes/origin/main:manifest.json"],
+            cwd=manifest_path.parent, encoding="utf-8", capture_output=True,
+        )
+        manifest_source = upstream.stdout if upstream.returncode == 0 else subprocess.check_output(
+            ["git", "show", "HEAD:manifest.json"], cwd=manifest_path.parent, encoding="utf-8",
+        )
+    else:
+        manifest_source = manifest_path.read_text(encoding="utf-8")
+    manifest = json.loads(manifest_source)
     contract = json.loads((ROOT / "deploy" / "COMPATIBILITY.json").read_text(encoding="utf-8"))
     recorded = contract["components"]["extension"]["version"]
     assert manifest["version"] == recorded, (

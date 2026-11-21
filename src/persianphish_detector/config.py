@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -66,10 +67,43 @@ class DetectorConfig:
     # timeouts per cooldown rather than one per review.
     enamad_verify: bool = True
     enamad_timeout_s: float = 8.0
+    fast_models_enabled: bool = True
+    # With an endpoint and model configured, callers can opt in per request.
+    jev_enabled: bool = False
+    jev_base_url: str = ""
+    jev_model: str = ""
+    jev_api_key: str = ""
+    jev_timeout_s: float = 20.0
+    jev_max_text_chars: int = 8000
+    jev_escalate_threshold: float = 0.20
+    jev_min_clear_confidence: float = 0.80
+    # Opt in only after validating standalone JEV clears on labeled data.
+    jev_short_circuit_legit: bool = False
+    jev_legit_threshold: float = 0.05
+    jev_local_model_path: Path | None = None
+    jev_local_auto_flag: bool = False
+
+    def __post_init__(self) -> None:
+        if bool(self.jev_base_url) != bool(self.jev_model.strip()):
+            raise ValueError("jev_requires_base_url_and_model")
+        if self.jev_enabled and not (self.jev_base_url or self.jev_local_model_path):
+            raise ValueError("jev_requires_provider_or_local_model")
+        if self.jev_local_auto_flag and not self.jev_local_model_path:
+            raise ValueError("jev_local_auto_flag_requires_model")
+        if self.jev_base_url:
+            endpoint = urlsplit(self.jev_base_url)
+            if (
+                endpoint.scheme not in {"http", "https"} or not endpoint.hostname
+                or endpoint.username is not None or endpoint.query or endpoint.fragment
+            ):
+                raise ValueError("invalid_jev_base_url")
+        if self.jev_short_circuit_legit and not self.jev_base_url:
+            raise ValueError("jev_clear_requires_base_url_and_model")
 
     @classmethod
     def from_env(cls, root: Path | None = None) -> "DetectorConfig":
         base = (root or Path.cwd()).resolve()
+        local_jev_path = os.getenv("PPD_JEV_LOCAL_MODEL_PATH", "").strip()
         return cls(
             artifact_path=Path(os.getenv("PPD_MODEL_PATH", base / "artifacts" / "v3" / "detector_v3_tcn.joblib")),
             intel_db_path=Path(os.getenv("PPD_INTEL_DB", base / "var" / "intel.sqlite3")),
@@ -97,4 +131,25 @@ class DetectorConfig:
             score_origin=_env_bool("PPD_SCORE_ORIGIN", True),
             enamad_verify=_env_bool("PPD_ENAMAD_VERIFY", True),
             enamad_timeout_s=_env_float("PPD_ENAMAD_TIMEOUT_S", 8.0, minimum=1.0, maximum=30.0),
+            fast_models_enabled=_env_bool("PPD_FAST_MODELS_ENABLED", True),
+            jev_enabled=_env_bool("PPD_JEV_ENABLED", False),
+            jev_base_url=os.getenv("PPD_JEV_BASE_URL", "").rstrip("/"),
+            jev_model=os.getenv("PPD_JEV_MODEL", "").strip(),
+            jev_api_key=os.getenv("PPD_JEV_API_KEY", ""),
+            jev_local_model_path=Path(local_jev_path) if local_jev_path else None,
+            jev_local_auto_flag=_env_bool("PPD_JEV_LOCAL_AUTO_FLAG", False),
+            jev_timeout_s=_env_float("PPD_JEV_TIMEOUT_S", 20.0, minimum=1.0, maximum=120.0),
+            jev_max_text_chars=_env_int(
+                "PPD_JEV_MAX_TEXT_CHARS", 8000, minimum=500, maximum=40_000
+            ),
+            jev_escalate_threshold=_env_float(
+                "PPD_JEV_ESCALATE_THRESHOLD", 0.20, minimum=0.0, maximum=1.0
+            ),
+            jev_min_clear_confidence=_env_float(
+                "PPD_JEV_MIN_CLEAR_CONFIDENCE", 0.80, minimum=0.0, maximum=1.0
+            ),
+            jev_short_circuit_legit=_env_bool("PPD_JEV_SHORT_CIRCUIT_LEGIT", False),
+            jev_legit_threshold=_env_float(
+                "PPD_JEV_LEGIT_THRESHOLD", 0.05, minimum=0.0, maximum=0.5
+            ),
         )

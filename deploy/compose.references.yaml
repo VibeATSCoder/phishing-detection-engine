@@ -47,6 +47,9 @@ services:
       RAG_EMBED_API_KEY: ${RAG_EMBED_API_KEY:-}
       RAG_EMBED_MODEL: ${RAG_EMBED_MODEL:-}
       RAG_EMBED_TIMEOUT_S: ${RAG_EMBED_TIMEOUT_S:-15}
+      RAG_PEAK_BLOCK_WEIGHT: ${RAG_PEAK_BLOCK_WEIGHT:-0.5}
+      RAG_DEDUP_REGISTRABLE: ${RAG_DEDUP_REGISTRABLE:-1}
+      RAG_BM25_WEIGHT: ${RAG_BM25_WEIGHT:-0.30}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     ports:
       # Loopback only. This answers questions about pages people visited, so it

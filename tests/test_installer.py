@@ -407,7 +407,7 @@ def test_the_index_can_be_downloaded_rather_than_only_pointed_at() -> None:
     """It used to be undistributable, so enabling references was impossible for
     anyone who had not built the index themselves."""
     assert "fetch_index()" in SOURCE
-    assert "embedding-index-${RAG_VERSION}.tar.gz" in SOURCE
+    assert "embedding-index-${RAG_INDEX_VERSION}.tar.gz" in SOURCE
     assert "block_emb.npy" in SOURCE, "the unpack must be checked for the matrix"
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 import uuid
 from dataclasses import asdict, replace
@@ -13,8 +14,12 @@ from .allowlist import CATALOG_VERSION, allowlisted_domain
 from .agent import AgentClient, AgentReview, AgentServiceError
 from .config import DetectorConfig
 from .crawl import BrowserCrawler, HttpCrawler, from_browser_payload
-from .domain_facts import collect_domain_facts
+from .domain_facts import DomainFacts, collect_domain_facts
 from .enamad import extract_seal, service_is_answering, verify_seal
+from .jev import JevClient, JevFinding, apply_jev, jev_structure, screening_text
+from .jev_local import LocalJev
+
+LOGGER = logging.getLogger(__name__)
 
 
 def _rf_input_features(
@@ -67,7 +72,7 @@ def _observed_risk(features: Mapping[str, float]) -> bool:
     )
 
 
-def _deterministic_risk(features: Mapping[str, float], combined_score: float) -> bool:
+def _deterministic_risk(features: Mapping[str, float], combined_score: float | None) -> bool:
     """Observed risk, or the ensemble putting the page above the midpoint.
 
     The docstring here used to claim this did not depend on any model's opinion,
@@ -82,7 +87,7 @@ def _deterministic_risk(features: Mapping[str, float], combined_score: float) ->
     midpoint is corroboration rather than an obstacle. The clearing direction
     uses _observed_risk instead.
     """
-    return combined_score >= 0.5 or _observed_risk(features)
+    return (combined_score is not None and combined_score >= 0.5) or _observed_risk(features)
 from .features import extract_features
 from .evidence_codes import derive_evidence
 from .intel import IntelMatch, IntelStore
@@ -112,7 +117,10 @@ class Detector:
         ) if config.use_browser else None
         self.intel = IntelStore(config.intel_db_path)
         self.review = ReviewStore(config.review_db_path)
-        self.artifact: Optional[DetectorArtifact] = load_artifact(config.artifact_path) if config.artifact_path.exists() else None
+        self.artifact: Optional[DetectorArtifact] = (
+            load_artifact(config.artifact_path)
+            if config.fast_models_enabled and config.artifact_path.exists() else None
+        )
         self.tcn: Optional[ONNXTCNPredictor] = None
         tcn_contract = (
             self.artifact.metadata.get("tcn_and_ensemble", {})
@@ -136,6 +144,14 @@ class Detector:
             timeout_s=config.agent_timeout_s,
             poll_interval_s=config.agent_poll_interval_s,
         ) if config.agent_base_url else None
+        self.jev = JevClient(
+            base_url=config.jev_base_url,
+            model=config.jev_model,
+            api_key=config.jev_api_key,
+            timeout_s=config.jev_timeout_s,
+            max_text_chars=config.jev_max_text_chars,
+        ) if config.jev_base_url else None
+        self.jev_local = LocalJev.load(config.jev_local_model_path) if config.jev_local_model_path else None
         self._enamad_client: Any = None
 
     def _enamad_http(self) -> Any:
@@ -155,25 +171,34 @@ class Detector:
             await self.browser.close()
         if self.agent:
             await self.agent.close()
+        if self.jev:
+            await self.jev.close()
 
     async def detect(
         self,
         url: str,
         browser_evidence: Mapping[str, Any] | None = None,
         agent_references: Sequence[Mapping[str, Any]] | None = None,
+        use_jev: bool | None = None,
+        *,
+        use_rf: bool | None = None,
     ) -> DetectionResult:
         """Trace-wrapped entry point; the pipeline itself lives in ``_detect``."""
         with span("detector.detect", **url_labels(url)):
-            return await self._detect(url, browser_evidence, agent_references)
+            return await self._detect(url, browser_evidence, agent_references, use_jev, use_rf)
 
     async def _detect(
         self,
         url: str,
         browser_evidence: Mapping[str, Any] | None = None,
         agent_references: Sequence[Mapping[str, Any]] | None = None,
+        use_jev: bool | None = None,
+        use_rf: bool | None = None,
     ) -> DetectionResult:
         started = time.perf_counter()
         request_id = uuid.uuid4().hex
+        run_fast = self.config.fast_models_enabled and use_rf is not False
+        run_jev = self.config.jev_enabled if use_jev is None else use_jev
         try:
             normalized = canonical_url(url)
         except UnsafeURL as exc:
@@ -205,7 +230,7 @@ class Detector:
         # reads to a user as this service being broken rather than as the site
         # declining to be read.
         allowlisted = allowlisted_domain(normalized)
-        if allowlisted and not intel_match:
+        if allowlisted and not intel_match and run_fast and not run_jev:
             METRICS.crawl_outcomes.labels(source="allowlist", status="skipped").inc()
             return self._result(
                 request_id, normalized, normalized, Verdict.LEGITIMATE, 0.0, "allowlist",
@@ -276,7 +301,7 @@ class Detector:
                 request_id, normalized, evidence.final_url or normalized, Verdict.CRAWL_FAILED, 0.5,
                 "browser" if evidence.source.startswith("browser") else "http",
                 evidence.status, ["crawl_not_usable", *evidence.quality_reasons],
-                {"rf": None, "tcn": self._predict_tcn(normalized)}, started,
+                {"rf": None, "tcn": self._predict_tcn(normalized) if run_fast else None}, started,
                 evidence.public_dict(), extra_latency={"crawl": crawl_ms},
                 evidence_items=derive_evidence(crawl_status=evidence.status.value),
             )
@@ -288,38 +313,7 @@ class Detector:
         facts = await collect_domain_facts(evidence.final_url or normalized, self.config.allow_private_network)
         facts_ms = (time.perf_counter() - facts_started) * 1000
         features = await asyncio.to_thread(extract_features, evidence, facts)
-        rf_features, scored_origin = _rf_input_features(
-            features, evidence, facts, self.config.score_origin
-        )
-        rf_probability: Optional[float] = None
-        ood_fraction = 1.0
-        if self.artifact:
-            rf_probability, ood_fraction = self.artifact.predict_rf(rf_features)
-        tcn_probability = self._predict_tcn(evidence.final_url or normalized)
-        combined = self._combine_scores(rf_probability, tcn_probability)
-        scores = {"rf": rf_probability, "tcn": tcn_probability, "combined": combined, "ood_fraction": ood_fraction}
-
-        if not self.artifact:
-            verdict = Verdict.SUSPICIOUS
-            reasons = ["model_artifact_missing"]
-        else:
-            verdict = self.artifact.policy.decide(combined, ood_fraction)
-            reasons = ["calibrated_fast_policy"]
-            if not self.artifact.policy.production_ready:
-                reasons.append("bootstrap_policy_not_production_validated")
-                if verdict == Verdict.PHISHING:
-                    if self._bootstrap_phishing_supported(features, rf_probability, tcn_probability):
-                        reasons.append("bootstrap_cross_evidence_supported")
-                    else:
-                        verdict = Verdict.SUSPICIOUS
-                        reasons.append("bootstrap_phishing_requires_corroboration")
-
-        if scored_origin:
-            reasons.append("rf_scored_on_origin")
-
-        if self._can_corroborate_benign(intel_match, features, combined, ood_fraction):
-            verdict = Verdict.LEGITIMATE
-            reasons.extend(["verified_benign_history_corroboration", f"intel_{intel_match.source}"])
+        verdict, reasons, scores = self._score_fast(features, evidence, facts, intel_match, run_fast)
 
         # An uncertain HTTP-only result receives one browser-rendered pass so
         # the deterministic model and review service see the same final DOM.
@@ -332,35 +326,12 @@ class Detector:
                 facts = await collect_domain_facts(evidence.final_url or normalized, self.config.allow_private_network)
                 facts_ms += (time.perf_counter() - facts_started) * 1000
                 features = await asyncio.to_thread(extract_features, evidence, facts)
-                # The browser pass re-scores, so it needs the same origin view.
-                # Patching only the first site left every rendered page scored on
-                # its full URL, which is most of them: the browser pass is what
-                # runs whenever the fast stage is uncertain.
-                rf_features, rendered_on_origin = _rf_input_features(
-                    features, evidence, facts, self.config.score_origin
+                verdict, reasons, scores = self._score_fast(
+                    features, evidence, facts, intel_match, run_fast
                 )
-                if rendered_on_origin and not scored_origin:
-                    scored_origin = True
-                    reasons.append("rf_scored_on_origin")
-                if self.artifact:
-                    rf_probability, ood_fraction = self.artifact.predict_rf(rf_features)
-                tcn_probability = self._predict_tcn(evidence.final_url or normalized)
-                combined = self._combine_scores(rf_probability, tcn_probability)
-                scores = {"rf": rf_probability, "tcn": tcn_probability, "combined": combined, "ood_fraction": ood_fraction}
-                if self.artifact:
-                    verdict = self.artifact.policy.decide(combined, ood_fraction)
-                    if (
-                        verdict == Verdict.PHISHING
-                        and not self.artifact.policy.production_ready
-                        and not self._bootstrap_phishing_supported(features, rf_probability, tcn_probability)
-                    ):
-                        verdict = Verdict.SUSPICIOUS
-                        reasons.append("bootstrap_phishing_requires_corroboration")
                 reasons.append("browser_rendered_recheck")
-                if self._can_corroborate_benign(intel_match, features, combined, ood_fraction):
-                    verdict = Verdict.LEGITIMATE
-                    reasons.append("verified_benign_history_corroboration")
 
+        combined = scores["combined"]
         enamad_audit: dict[str, Any] | None = None
         if self.config.enamad_verify and evidence.usable:
             seal = extract_seal(evidence.html or "")
@@ -377,7 +348,10 @@ class Detector:
                     # A registry with an authority behind it outranks an
                     # uncertain score, but never a concrete risk signal: a
                     # certified merchant can still be compromised.
-                    if verdict == Verdict.SUSPICIOUS and not _deterministic_risk(features, combined):
+                    if (
+                        combined is not None and verdict == Verdict.SUSPICIOUS
+                        and not _deterministic_risk(features, combined)
+                    ):
                         verdict = Verdict.LEGITIMATE
                         reasons.append("enamad_verified_corroboration")
                 elif result_enamad.displays_unverified_seal:
@@ -387,6 +361,65 @@ class Detector:
                     if await service_is_answering(self._enamad_http(), timeout_s=self.config.enamad_timeout_s):
                         reasons.append("enamad_seal_not_certified_for_host")
                         enamad_audit["refusal_confirmed"] = True
+
+        # A requested screener must sign off on a fast clear. Its risk and
+        # confidence remain separate from the calibrated scores.
+        jev_audit: dict[str, Any] | None = None
+        local_jev_audit: dict[str, Any] | None = None
+        jev_ms = 0.0
+        if run_jev and self.jev_local and verdict != Verdict.PHISHING:
+            local_started = time.perf_counter()
+            try:
+                local_risk = await asyncio.to_thread(self.jev_local.score, features)
+            except Exception as exc:
+                LOGGER.warning("local JEV scoring failed: %s", type(exc).__name__)
+                local_risk = None
+            verdict, decision = self.jev_local.decide(
+                verdict, local_risk, auto_flag=self.config.jev_local_auto_flag
+            )
+            reasons.append(decision)
+            local_jev_audit = {
+                "status": "completed" if local_risk is not None else "unavailable",
+                "risk": local_risk,
+                "decision": decision,
+                "review_threshold": self.jev_local.review_threshold,
+                "phishing_threshold": self.jev_local.phishing_threshold,
+                "latency_ms": round((time.perf_counter() - local_started) * 1000, 3),
+            }
+        if run_jev and verdict != Verdict.PHISHING and (self.jev is not None or self.jev_local is None):
+            jev_started = time.perf_counter()
+            if self.jev is None:
+                finding = JevFinding(error="jev_not_configured")
+            else:
+                visible = await asyncio.to_thread(
+                    screening_text, evidence.html, self.config.jev_max_text_chars
+                )
+                if visible:
+                    finding = await self.jev.score(
+                        url=evidence.final_url or normalized,
+                        visible_text=visible,
+                        structure=jev_structure(features, evidence.final_url or normalized),
+                    )
+                else:
+                    finding = JevFinding(error="jev_empty_visible_text")
+            jev_ms = (time.perf_counter() - jev_started) * 1000
+            verdict, jev_reasons = apply_jev(
+                verdict,
+                finding,
+                (
+                    _observed_risk(features)
+                    or features["unicode_confusable_count"] > 0
+                    or features["cross_domain_redirect_count"] > 0
+                    or "enamad_seal_not_certified_for_host" in reasons
+                ),
+                self.config,
+                standalone=not run_fast and (
+                    local_jev_audit is None
+                    or local_jev_audit["decision"] == "jev_local_below_review_threshold"
+                ),
+            )
+            reasons.extend(jev_reasons)
+            jev_audit = finding.audit_summary()
 
         agent_invoked = False
         agent_audit: dict[str, Any] | None = None
@@ -400,8 +433,8 @@ class Detector:
                     suspect_html=evidence.html,
                     upstream={
                         "request_id": request_id,
-                        "rf_score": rf_probability,
-                        "tcn_score": tcn_probability,
+                        "rf_score": scores["rf"],
+                        "tcn_score": scores["tcn"],
                         "combined_score": combined,
                         "reason_codes": reasons,
                     },
@@ -440,13 +473,26 @@ class Detector:
         evidence_summary = evidence.public_dict()
         if enamad_audit is not None:
             evidence_summary["enamad"] = enamad_audit
+        if jev_audit is not None:
+            evidence_summary["jev"] = jev_audit
+        if local_jev_audit is not None:
+            evidence_summary["jev_local"] = local_jev_audit
         if agent_audit is not None:
             evidence_summary["agent_review"] = agent_audit
+        stage = "browser" if evidence.source.startswith("browser") else "fast"
+        risk_score = combined if combined is not None else 0.5
+        if agent_invoked:
+            stage = "agent"
+        elif local_jev_audit and local_jev_audit["decision"] == "jev_local_phishing_threshold":
+            stage = "jev_local"
+            risk_score = local_jev_audit["risk"]
+
         result = self._result(
-            request_id, normalized, evidence.final_url or normalized, verdict, combined,
-            "agent" if agent_invoked else ("browser" if evidence.source.startswith("browser") else "fast"),
+            request_id, normalized, evidence.final_url or normalized, verdict,
+            risk_score,
+            stage,
             evidence.status, reasons, scores, started, evidence_summary,
-            extra_latency={"crawl": crawl_ms, "domain_facts": facts_ms, "agent": agent_ms},
+            extra_latency={"crawl": crawl_ms, "domain_facts": facts_ms, "agent": agent_ms, "jev": jev_ms},
             evidence_items=derive_evidence(
                 features,
                 intel_match=intel_match,
@@ -458,6 +504,41 @@ class Detector:
             self._enqueue(result)
         self._persist(result)
         return result
+
+    def _score_fast(
+        self,
+        features: Mapping[str, float],
+        evidence: CrawlEvidence,
+        facts: DomainFacts,
+        intel_match: IntelMatch | None,
+        enabled: bool,
+    ) -> tuple[Verdict, list[str], dict[str, float | None]]:
+        if not enabled or self.artifact is None:
+            reason = "model_artifact_missing" if enabled else "fast_models_skipped"
+            return Verdict.SUSPICIOUS, [reason], dict.fromkeys(("rf", "tcn", "combined", "ood_fraction"))
+
+        rf_features, scored_origin = _rf_input_features(
+            features, evidence, facts, self.config.score_origin
+        )
+        rf, ood = self.artifact.predict_rf(rf_features)
+        tcn = self._predict_tcn(evidence.final_url or evidence.target_url)
+        combined = self.artifact.combine_scores(rf, tcn)
+        verdict = self.artifact.policy.decide(combined, ood)
+        reasons = ["calibrated_fast_policy"]
+        if not self.artifact.policy.production_ready:
+            reasons.append("bootstrap_policy_not_production_validated")
+            if verdict == Verdict.PHISHING:
+                if self._bootstrap_phishing_supported(features, rf, tcn):
+                    reasons.append("bootstrap_cross_evidence_supported")
+                else:
+                    verdict = Verdict.SUSPICIOUS
+                    reasons.append("bootstrap_phishing_requires_corroboration")
+        if scored_origin:
+            reasons.append("rf_scored_on_origin")
+        if intel_match and self._can_corroborate_benign(intel_match, features, combined, ood):
+            verdict = Verdict.LEGITIMATE
+            reasons.extend(["verified_benign_history_corroboration", f"intel_{intel_match.source}"])
+        return verdict, reasons, {"rf": rf, "tcn": tcn, "combined": combined, "ood_fraction": ood}
 
     def _predict_tcn(self, url: str) -> Optional[float]:
         if not self.tcn:
@@ -511,20 +592,11 @@ class Detector:
             )
         )
         return cross_model_agreement or deterministic_mismatch
-    def _combine_scores(self, rf: Optional[float], tcn: Optional[float]) -> float:
-        # Kept as a compatibility fallback for artifacts without an ensemble
-        # contract. Detector.detect uses the artifact combiner when available.
-        if self.artifact:
-            return self.artifact.combine_scores(rf, tcn)
-        if rf is None and tcn is None:
-            return 0.5
-        return float(tcn if rf is None else rf)
-
     @staticmethod
     def _reconcile_agent(
         review: AgentReview,
         features: Mapping[str, float],
-        combined_score: float,
+        combined_score: float | None,
         evidence: CrawlEvidence,
     ) -> Tuple[Verdict, list[str]]:
         reasons = ["agent_review_completed", *review.reasons, *review.evidence_codes]

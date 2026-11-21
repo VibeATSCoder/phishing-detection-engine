@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -10,6 +11,9 @@ import pytest
 from persianphish_detector.agent import AgentClient, AgentReview, AgentServiceError
 from persianphish_detector.config import DetectorConfig
 from persianphish_detector import orchestrator as orchestrator_module
+from persianphish_detector.features import FEATURE_COLUMNS
+from persianphish_detector.jev import JevFinding
+from persianphish_detector.jev_local import LocalJev
 from persianphish_detector.orchestrator import Detector
 from persianphish_detector.models.policy import DecisionPolicy
 from persianphish_detector.types import CrawlEvidence, CrawlStatus, DomainFacts, Verdict
@@ -167,6 +171,8 @@ def base_features() -> dict[str, float]:
         "suspicious_token_count": 0,
         "password_input_count": 0,
         "title_domain_token_overlap": 1,
+        "unicode_confusable_count": 0,
+        "cross_domain_redirect_count": 0,
     }
 
 
@@ -304,6 +310,8 @@ def make_detector(tmp_path: Path, evidence: CrawlEvidence, verdict: Verdict, age
     detector.artifact = FakeArtifact(verdict)
     detector.tcn = FakeTCN()
     detector.agent = agent
+    detector.jev = None
+    detector.jev_local = None
     return detector
 
 
@@ -368,6 +376,184 @@ async def test_detector_does_not_call_agent_when_crawl_failed(tmp_path: Path):
     result = await detector.detect("https://blocked.example/")
     assert result.verdict == Verdict.CRAWL_FAILED
     assert agent.calls == []
+
+
+@pytest.fixture
+def cascade_inputs(monkeypatch):
+    async def facts(_url, _allow_private):
+        return DomainFacts()
+
+    features = base_features()
+    monkeypatch.setattr(orchestrator_module, "collect_domain_facts", facts)
+    monkeypatch.setattr(orchestrator_module, "extract_features", lambda *_: features)
+    return features
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scores, expected",
+    [
+        ({"phishing_score": 0.1999, "confidence": 0.80}, Verdict.LEGITIMATE),
+        ({"phishing_score": 0.20, "confidence": 0.80}, Verdict.SUSPICIOUS),
+        ({"phishing_score": 0.01, "confidence": 0.7999}, Verdict.SUSPICIOUS),
+        ({"scam_score": 0.60, "confidence": 0.90}, Verdict.SUSPICIOUS),
+        ({"label": "suspicious", "confidence": 0.90}, Verdict.SUSPICIOUS),
+        (None, Verdict.SUSPICIOUS),
+    ],
+    ids=["agreement", "risk-boundary", "confidence-boundary", "scam", "abstention", "unconfigured"],
+)
+async def test_screener_gate_controls_a_fast_clear(tmp_path, cascade_inputs, scores, expected):
+    agent = FakeAgent(review("suspicious", 0.5, 0.49))
+    detector = make_detector(tmp_path, usable_evidence(), Verdict.LEGITIMATE, agent)
+    if scores is not None:
+        fields = {"ok": True, "label": "legitimate", **scores}
+
+        async def screen(**kwargs):
+            assert kwargs["visible_text"] == "usable"
+            return JevFinding(**fields)
+
+        detector.jev = SimpleNamespace(score=screen)
+
+    result = await detector.detect("https://suspect.example/", use_jev=True)
+
+    assert result.verdict == expected
+    assert result.model_scores["combined"] == result.risk_score == 0.4
+    assert bool(agent.calls) == (expected == Verdict.SUSPICIOUS)
+    if agent.calls:
+        assert agent.calls[0]["upstream"]["combined_score"] == 0.4
+    if scores is None:
+        assert "jev_unavailable:jev_not_configured" in result.reason_codes
+        assert result.evidence_summary["jev"]["risk"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "risk_feature, expected",
+    [
+        (None, Verdict.LEGITIMATE),
+        ("external_form_action_count", Verdict.SUSPICIOUS),
+        ("unicode_confusable_count", Verdict.SUSPICIOUS),
+        ("cross_domain_redirect_count", Verdict.SUSPICIOUS),
+    ],
+)
+async def test_standalone_clear_checks_structural_risk(tmp_path, cascade_inputs, risk_feature, expected):
+    agent = FakeAgent(review("suspicious", 0.5, 0.49))
+    detector = make_detector(tmp_path, usable_evidence(), Verdict.PHISHING, agent)
+    detector.config = replace(
+        detector.config, jev_base_url="http://screen.example/v1", jev_model="fixture",
+        jev_short_circuit_legit=True,
+    )
+
+    async def screen(**kwargs):
+        return JevFinding(ok=True, phishing_score=0.01, confidence=0.90, label="legitimate")
+
+    detector.jev = SimpleNamespace(score=screen)
+    if risk_feature:
+        cascade_inputs[risk_feature] = 1
+
+    result = await detector.detect("https://suspect.example/", use_rf=False, use_jev=True)
+
+    assert result.verdict == expected
+    assert all(score is None for score in result.model_scores.values())
+    assert bool(agent.calls) == (expected == Verdict.SUSPICIOUS)
+
+
+@pytest.mark.asyncio
+async def test_combined_provider_outage_stays_suspicious(tmp_path, cascade_inputs):
+    class UnavailableReviewer:
+        async def review(self, **kwargs):
+            raise AgentServiceError("agent_poll_timeout")
+
+    detector = make_detector(tmp_path, usable_evidence(), Verdict.LEGITIMATE, UnavailableReviewer())
+
+    async def screen(**kwargs):
+        return JevFinding(error="http_503")
+
+    detector.jev = SimpleNamespace(score=screen)
+    result = await detector.detect("https://suspect.example/", use_jev=True)
+
+    assert result.verdict == Verdict.SUSPICIOUS
+    assert result.evidence_summary["jev"]["error_code"] == "http_503"
+    assert result.evidence_summary["agent_review"]["error_code"] == "agent_poll_timeout"
+    assert detector.review.items[0]["request_id"] == result.request_id
+
+
+def test_without_fast_score_review_needs_its_own_concrete_support():
+    assessment = review("phishing", 0.92, 0.90)
+    verdict, _ = Detector._reconcile_agent(assessment, base_features(), None, usable_evidence())
+    assert verdict == Verdict.SUSPICIOUS
+
+    grounded = replace(assessment, reasons=["two_pass_phishing_with_concrete_support"])
+    verdict, _ = Detector._reconcile_agent(grounded, base_features(), None, usable_evidence())
+    assert verdict == Verdict.PHISHING
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "risk, auto_flag, use_jev, expected",
+    [
+        (0.001, False, True, Verdict.LEGITIMATE),
+        (0.01, False, True, Verdict.SUSPICIOUS),
+        (0.9, False, True, Verdict.SUSPICIOUS),
+        (0.9, True, True, Verdict.PHISHING),
+        (float("nan"), False, True, Verdict.SUSPICIOUS),
+        (0.9, True, False, Verdict.LEGITIMATE),
+    ],
+    ids=["below-review", "review-boundary", "flag-disabled", "flag-enabled", "scorer-failure", "jev-skipped"],
+)
+async def test_local_jev_routes_independently_of_rf(
+    tmp_path, cascade_inputs, risk, auto_flag, use_jev, expected,
+):
+    import numpy as np
+
+    for key in FEATURE_COLUMNS:
+        cascade_inputs.setdefault(key, 0.0)
+    classifier = SimpleNamespace(predict_proba=lambda _rows: np.asarray([[1 - risk, risk]]))
+    agent = FakeAgent(review("suspicious", 0.50, 0.49))
+    detector = make_detector(tmp_path, usable_evidence(), Verdict.LEGITIMATE, agent)
+    detector.jev_local = LocalJev(classifier, review_threshold=0.01, phishing_threshold=0.80)
+    detector.config = replace(
+        detector.config, jev_local_model_path=tmp_path / "fixture.joblib", jev_local_auto_flag=auto_flag,
+    )
+
+    result = await detector.detect("https://suspect.example/", use_jev=use_jev)
+
+    assert result.verdict == expected
+    assert result.model_scores["combined"] == 0.4
+    assert bool(agent.calls) == (expected == Verdict.SUSPICIOUS)
+    assert "jev" not in result.evidence_summary
+    assert ("jev_local" in result.evidence_summary) == use_jev
+    if expected == Verdict.PHISHING:
+        assert result.stage == "jev_local" and result.risk_score == 0.9
+    elif risk != risk:
+        assert result.evidence_summary["jev_local"]["risk"] is None
+
+
+@pytest.mark.asyncio
+async def test_remote_screener_cannot_clear_over_local_jev_risk(tmp_path, cascade_inputs):
+    import numpy as np
+
+    for key in FEATURE_COLUMNS:
+        cascade_inputs.setdefault(key, 0.0)
+    classifier = SimpleNamespace(predict_proba=lambda _rows: np.asarray([[0.3, 0.7]]))
+    agent = FakeAgent(review("suspicious", 0.50, 0.49))
+    detector = make_detector(tmp_path, usable_evidence(), Verdict.LEGITIMATE, agent)
+    detector.jev_local = LocalJev(classifier, review_threshold=0.01, phishing_threshold=0.80)
+    detector.config = replace(
+        detector.config, jev_base_url="http://screen.example/v1", jev_model="fixture",
+        jev_short_circuit_legit=True, jev_local_model_path=tmp_path / "fixture.joblib",
+    )
+
+    async def screen(**_kwargs):
+        return JevFinding(ok=True, phishing_score=0.01, confidence=0.95, label="legitimate")
+
+    detector.jev = SimpleNamespace(score=screen)
+    result = await detector.detect("https://suspect.example/", use_rf=False, use_jev=True)
+
+    assert result.verdict == Verdict.SUSPICIOUS
+    assert "jev_local_review_threshold" in result.reason_codes
+    assert "jev_short_circuit_legit" not in result.reason_codes
+    assert len(agent.calls) == 1
 
 
 def test_reference_matches_are_surfaced_in_the_agent_review():
