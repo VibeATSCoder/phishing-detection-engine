@@ -116,7 +116,7 @@ ARTEFACT_DIRS=()
 # Versions this stack releases as. deploy/COMPATIBILITY.json records the same
 # numbers and tests/test_release_contract.py asserts the two agree, so these
 # cannot drift from the contract unnoticed.
-DETECTOR_VERSION="${DETECTOR_VERSION:-3.9.0}"
+DETECTOR_VERSION="${DETECTOR_VERSION:-3.9.1}"
 REVIEW_VERSION="${REVIEW_VERSION:-1.12.0}"
 RAG_VERSION="${RAG_VERSION:-2.2.0}"
 # The reference *index* is data, versioned independently of the service image:

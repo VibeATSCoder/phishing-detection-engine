@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-ARG APP_VERSION=3.9.0
+ARG APP_VERSION=3.9.1
 LABEL org.opencontainers.image.title="Phishing Detection Engine" \
       org.opencontainers.image.version=$APP_VERSION \
       org.opencontainers.image.source="https://github.com/VibeATSCoder/phishing-detection-engine"
@@ -13,7 +13,10 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 COPY pyproject.toml requirements.txt requirements-browser.txt ./
-RUN pip install --upgrade pip && \
+# Playwright's bundled Node runtime needs libatomic before it can install Chromium.
+RUN apt-get update && apt-get install -y --no-install-recommends libatomic1 && \
+    rm -rf /var/lib/apt/lists/* && \
+    pip install --upgrade pip && \
     pip install --requirement requirements-browser.txt && \
     playwright install --with-deps chromium && \
     addgroup --system detector && \
