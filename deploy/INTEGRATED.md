@@ -1,6 +1,6 @@
 # Minimal integrated deployment
 
-Stack 1.2.0 uses detector v3.9.1, reviewer v1.12.0, extension v3.10.0, and optional RAG v2.2.0. The component contract is recorded in [COMPATIBILITY.json](COMPATIBILITY.json).
+Stack 1.2.1 uses detector v3.9.2, reviewer v1.12.0, extension v3.10.0, and optional RAG v2.2.0. The component contract is recorded in [COMPATIBILITY.json](COMPATIBILITY.json).
 
 This bundle runs two services:
 
@@ -21,7 +21,7 @@ No checkout, no build, no `gh`. This downloads every release artefact, loads
 each image, writes one aggregated `.env`, and starts the stack:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/VibeATSCoder/phishing-detection-engine/main/deploy/install.sh | bash
+curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.2/install.sh | bash
 ```
 
 It stops and tells you what to fill in the first time, because
@@ -61,7 +61,7 @@ stack bundle from the two releases into one directory, unpack the bundle, and
 run the script:
 
 ```bash
-tar -xzf persianphish-stack-1.2.0-deploy.tar.gz     # compose files and this guide
+tar -xzf persianphish-stack-1.2.1-deploy.tar.gz     # compose files and this guide
 cp deploy/stack.env.example deploy/.env             # then set the two keys
 bash deploy/deploy.sh
 ```
@@ -314,7 +314,7 @@ being down degrades reviews to the same behaviour as not running it at all.
 
 ## Manual installation and extension testing
 
-Download [install.sh](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.1/install.sh)
+Download [install.sh](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.2/install.sh)
 into your installation directory. Run it in a terminal so it can show the
 release links and check for local files.
 
@@ -326,8 +326,8 @@ Use these release assets if you are downloading on a separate computer.
 
 | Component | Assets |
 | --- | --- |
-| Detector | [Docker image and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/v3.9.1) |
-| Stack | [Deployment bundle](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.1/persianphish-stack-1.2.0-deploy.tar.gz) |
+| Detector | [Docker image and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/v3.9.2) |
+| Stack | [Deployment bundle](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.2/persianphish-stack-1.2.1-deploy.tar.gz) |
 | Reviewer | [Docker image and checksum](https://github.com/VibeATSCoder/agentic-phishing-review/releases/tag/v1.12.0) |
 | RAG | [Image parts, checksums, and loader](https://github.com/VibeATSCoder/phishing-rag-service/releases/tag/v2.2.0) |
 | Reference index | [Index parts and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/rag-index-2.0.0) |
@@ -340,7 +340,7 @@ set `PPD_JEV_API_KEY` in `deploy/.env`. The extension uses the detector's
 `PPD_API_KEY`. A configured Decision model is callable from a selected pipeline
 when `PPD_JEV_ENABLED=0`, which keeps it off in the server's default pipeline.
 For existing installations, the installer uses the versioned deployment bundle
-and reads the existing `deploy/.env`.
+and retains provider keys from the existing `deploy/.env`. A full install records the selected RAG image version there.
 
 Unzip the extension on the browser computer. In `chrome://extensions` or
 `edge://extensions`, enable Developer mode and select **Load unpacked**. Open
@@ -348,7 +348,7 @@ the extension's options and enable backend review. Enter the detector origin
 and its API key. Check **Send every page to the backend** and **Customize backend
 stages** to test precisely the selected backend stages. Check the stages you
 want and move them into order. **Test connection** checks the detector's
-configuration. Open a test page, then refresh **Local diagnostics** to see the
+configuration. Open a Persian-language test page, then refresh **Local diagnostics** to see the
 stages that completed, were unavailable, or were skipped, plus their timings.
 
 A definitive verdict ends the pipeline. RAG retrieves reference matches and

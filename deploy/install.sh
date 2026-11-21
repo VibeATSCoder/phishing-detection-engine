@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One command to fetch, load and start the whole stack.
 #
-#   curl -fsSL https://raw.githubusercontent.com/VibeATSCoder/phishing-detection-engine/main/deploy/install.sh | bash
+#   curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.2/install.sh | bash
 #
 # or, having downloaded it:
 #
@@ -102,6 +102,7 @@ else
   INSTALL_DIR="${PWD}/persianphish"
 fi
 WITH_REFERENCES=0
+REQUIRE_REFERENCES=0
 FETCH_INDEX=0
 DOWNLOAD_ONLY=0
 RECHECK=0
@@ -116,7 +117,7 @@ ARTEFACT_DIRS=()
 # Versions this stack releases as. deploy/COMPATIBILITY.json records the same
 # numbers and tests/test_release_contract.py asserts the two agree, so these
 # cannot drift from the contract unnoticed.
-DETECTOR_VERSION="${DETECTOR_VERSION:-3.9.1}"
+DETECTOR_VERSION="${DETECTOR_VERSION:-3.9.2}"
 REVIEW_VERSION="${REVIEW_VERSION:-1.12.0}"
 RAG_VERSION="${RAG_VERSION:-2.2.0}"
 # The reference *index* is data, versioned independently of the service image:
@@ -127,13 +128,13 @@ RAG_VERSION="${RAG_VERSION:-2.2.0}"
 RAG_INDEX_VERSION="${RAG_INDEX_VERSION:-2.0.0}"
 RAG_INDEX_REPO="${RAG_INDEX_REPO:-phishing-detection-engine}"
 RAG_INDEX_TAG="${RAG_INDEX_TAG:-rag-index-${RAG_INDEX_VERSION}}"
-STACK_VERSION="${STACK_VERSION:-1.2.0}"
+STACK_VERSION="${STACK_VERSION:-1.2.1}"
 EXTENSION_VERSION="${EXTENSION_VERSION:-3.10.0}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --dir) INSTALL_DIR="${2:?--dir needs a path}"; shift 2 ;;
-    --with-references|--full) WITH_REFERENCES=1; shift ;;
+    --with-references|--full) WITH_REFERENCES=1; REQUIRE_REFERENCES=1; shift ;;
     --download-only) DOWNLOAD_ONLY=1; shift ;;
     --recheck) RECHECK=1; shift ;;
     --no-prompt) NO_PROMPT=1; shift ;;
@@ -1240,6 +1241,7 @@ fetch_index() {
 step "images"
 if [ "${FETCH_INDEX:-0}" -eq 1 ]; then
   if ! fetch_index; then
+    [ "${REQUIRE_REFERENCES}" -eq 0 ] || die "the requested reference index could not be installed"
     say "  the index could not be fetched, so references stay off"
     WITH_REFERENCES=0
   fi
@@ -1552,6 +1554,8 @@ for key in OPENROUTER_API_KEY INTERNAL_REVIEW_API_KEY; do
   [ -z "${value//[[:space:]]/}" ] && missing="${missing} ${key}"
 done
 if [ "${WITH_REFERENCES}" -eq 1 ]; then
+  # deploy.sh reads this pin from the existing env file during an upgrade.
+  set_env RAG_VERSION "${RAG_VERSION}"
   value="$(sed -n 's/^RAG_INDEX_HOST_PATH=//p' deploy/.env | tail -n 1)"
   if [ -z "${value//[[:space:]]/}" ]; then
     if index_dir="$(discover_index)"; then
