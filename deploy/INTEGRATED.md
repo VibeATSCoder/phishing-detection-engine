@@ -1,6 +1,6 @@
 # Minimal integrated deployment
 
-Compatibility set: detector **v3.8.2**, reviewer **v1.11.0**, optional extension client **v3.7.0**.8.1**, reviewer **v1.11.0**, optional extension client **v3.6.0**. The exact contract is recorded in `COMPATIBILITY.json`.
+Stack 1.2.0 uses detector v3.9.0, reviewer v1.12.0, extension v3.10.0, and optional RAG v2.2.0. The component contract is recorded in [COMPATIBILITY.json](COMPATIBILITY.json).
 
 This bundle runs two services:
 
@@ -61,7 +61,7 @@ stack bundle from the two releases into one directory, unpack the bundle, and
 run the script:
 
 ```bash
-tar -xzf persianphish-stack-1.1.0-deploy.tar.gz     # compose files and this guide
+tar -xzf persianphish-stack-1.2.0-deploy.tar.gz     # compose files and this guide
 cp deploy/stack.env.example deploy/.env             # then set the two keys
 bash deploy/deploy.sh
 ```
@@ -120,19 +120,26 @@ never sends page HTML, cookies, headers, or form values.
 
 ## Optional JEV screening
 
-Set these values in `deploy/.env` to run the screener by default:
+Set these values in `deploy/.env` to run AvalAI's TypeSafe Jev by default:
 
 ```dotenv
 PPD_JEV_ENABLED=1
-PPD_JEV_BASE_URL=https://provider.example/v1
-PPD_JEV_MODEL=your-model
+PPD_JEV_API_FORMAT=decisions
+PPD_JEV_BASE_URL=https://api.avalai.ir/v1
+PPD_JEV_MODEL=jev-latest
 PPD_JEV_API_KEY=
 ```
 
-The endpoint must implement OpenAI-compatible chat completions and return the
-JEV score object requested by the detector's prompt. The detector sends a host,
-bounded page text and a summary of structural signals. A CLEF or other custom
-model can sit behind an endpoint that translates its output to that contract.
+Set `PPD_JEV_API_KEY` using your AvalAI key. The Decisions client calls
+`POST /v1/decisions` and asks four typed risk questions and one label question.
+The reply's label confidence comes from the provider. The detector validates
+each named answer and routes missing or invalid answers to review. See the
+[AvalAI TypeSafe documentation](https://docs.avalai.ir/en/providers/typesafe).
+
+Use `PPD_JEV_API_FORMAT=chat_completions` for an OpenAI-compatible chat model
+that returns the JEV score object requested by the detector's prompt.
+Both formats send the hostname, bounded visible text, and selected
+structural counts. Decisions does not send raw HTML, full URLs or form values.
 
 Set `PPD_FAST_MODELS_ENABLED=0` for JEV followed by deep review without RF/TCN.
 The running Compose stack must have a reachable reviewer, with RAG configured
@@ -148,6 +155,37 @@ low-risk clears after validation. Confirmed threat intelligence keeps priority
 and unusable crawl evidence yields `crawl_failed`.
 
 Read category scores, confidence, model and status under `evidence_summary.jev`.
+The detector reports `latency_ms.total` for work through the verdict.
+It also reports crawl time, domain facts, feature extraction, combined
+RF/TCN time, Jev time and agent time when applicable. Under crawl, the
+`http`, `browser` and `browser_input` timings identify how evidence was
+obtained. These are included in `crawl`. An HTTP 403 ends the content
+pipeline with `crawl_failed` before a browser retry or a model or reviewer
+call.
+
+Read the RF/TCN verdict in `evidence_summary.fast_verdict` and scores in
+`model_scores`. For an escalated case, `evidence_summary.agent_review`
+contains the RAG reference matches, reviewer timings, the analyst and verifier
+verdicts and scores, and the reviewer's reconciled candidate. The reviewer
+returns the same per-stage measurements in `result.timings_ms` and the
+two pass outcomes in `result.review_passes` when polling
+`GET /api/v1/analyses/{analysis_id}`. Those reviewer timings are included
+in the detector's `latency_ms.agent`, which also measures the HTTP and polling
+overhead. Read the detector's final decision in `verdict`.
+
+With `PPD_AGENT_PREFETCH_REFERENCES=1`, the detector asks the reviewer to
+begin local reference retrieval during Jev when the current policy already
+requires deep review. It does this only for usable evidence and when the caller
+supplied no references. The reviewer still receives the complete Jev outcome.
+The `rag` reviewer timing measures the wait for references, which can be near
+zero if the lookup finishes during Jev. Older reviewer deployments fall back
+to retrieving references during normal review.
+
+Keep `OPENROUTER_MODEL=google/gemma-4-31b-it` for standard reviewer routing.
+Set `OPENROUTER_MODEL=google/gemma-4-31b-it:nitro` to test OpenRouter's
+throughput-oriented route for the same model on both review passes. Measure
+stage latency and final verdicts on the same inputs before switching a runtime.
+
 If RF/TCN did not run, its `model_scores` are null and the top-level
 `risk_score` is the neutral fallback 0.5 unless a configured local JEV model
 issued the terminal phishing verdict.
@@ -273,3 +311,56 @@ being down degrades reviews to the same behaviour as not running it at all.
 - Confident RF/TCN results do not spend OpenRouter calls.
 - OpenRouter scores are advisory and are never blended into the calibrated RF/TCN score.
 - Reference retrieval failing, timing out, or being absent yields no references; reviews continue and are floored at `suspicious`.
+
+## Manual installation and extension testing
+
+Download [install.sh](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.0/install.sh)
+into your installation directory. Run it in a terminal so it can show the
+release links and check for local files.
+
+```bash
+bash install.sh --manual --full
+```
+
+Use these release assets if you are downloading on a separate computer.
+
+| Component | Assets |
+| --- | --- |
+| Detector | [Docker image and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/v3.9.0) |
+| Stack | [Deployment bundle](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.0/persianphish-stack-1.2.0-deploy.tar.gz) |
+| Reviewer | [Docker image and checksum](https://github.com/VibeATSCoder/agentic-phishing-review/releases/tag/v1.12.0) |
+| RAG | [Image parts, checksums, and loader](https://github.com/VibeATSCoder/phishing-rag-service/releases/tag/v2.2.0) |
+| Reference index | [Index parts and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/rag-index-2.0.0) |
+| Browser extension | [Chrome/Edge ZIP](https://github.com/VibeATSCoder/phishingshield-persian/releases/download/v3.10.0/phishingshield-persian-v3.10.0.zip) |
+
+The installer prompts for the reviewer provider and offers a separate Decision
+model endpoint. For AvalAI Jev use base URL `https://api.avalai.ir/v1`, format
+`decisions`, and model `jev-latest`. Supply the provider key to the installer or
+set `PPD_JEV_API_KEY` in `deploy/.env`. The extension uses the detector's
+`PPD_API_KEY`. A configured Decision model is callable from a selected pipeline
+when `PPD_JEV_ENABLED=0`, which keeps it off in the server's default pipeline.
+For existing installations, the installer uses the versioned deployment bundle
+and reads the existing `deploy/.env`.
+
+Unzip the extension on the browser computer. In `chrome://extensions` or
+`edge://extensions`, enable Developer mode and select **Load unpacked**. Open
+the extension's options and enable backend review. Enter the detector origin
+and its API key. Check **Send every page to the backend** and **Customize backend
+stages** to test precisely the selected backend stages. Check the stages you
+want and move them into order. **Test connection** checks the detector's
+configuration. Open a test page, then refresh **Local diagnostics** to see the
+stages that completed, were unavailable, or were skipped, plus their timings.
+
+A definitive verdict ends the pipeline. RAG retrieves reference matches and
+leaves the verdict suspicious if there are no other conclusive stages.
+Agent-only runs disable automatic retrieval, and an agent that runs before
+RAG cannot use results from that later stage. Decision-only runs follow the
+configured provider's conservative clearance policy. Failed crawls skip all
+selected stages. If **Send every page** is off, the browser uses its offline
+URL model first and forwards only locally suspicious pages.
+
+API clients can send the same order directly.
+
+```json
+{"url":"https://example.com/","pipeline":["rf","decision","rag","agent"]}
+```

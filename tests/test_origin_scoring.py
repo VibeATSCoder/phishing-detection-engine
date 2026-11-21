@@ -9,6 +9,10 @@ is flagged.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
+from persianphish_detector.domain_facts import DomainFacts
+from persianphish_detector.features import extract_features
 from persianphish_detector.orchestrator import _rf_input_features
 from persianphish_detector.types import CrawlEvidence, CrawlStatus
 
@@ -44,6 +48,22 @@ def test_a_browsed_subpage_is_scored_as_its_origin() -> None:
 def test_a_bare_origin_is_left_alone() -> None:
     _, used = _rf_input_features({}, _evidence("https://example.ir/"), None, True)
     assert used is False, "nothing to rewrite when the URL is already an origin"
+
+
+def test_origin_features_match_a_full_parse_of_the_origin() -> None:
+    evidence = _evidence("https://example.ir/account/login?from=sample")
+    evidence.html = (
+        '<html><head><link rel="icon" href="../icon.ico"></head><body>'
+        '<a href="../home">Internal</a><a href="//other.example/">External</a>'
+        '<form action="./submit"><input type="password"></form></body></html>'
+    )
+    facts = DomainFacts(registrable_domain="example.ir")
+    expected = extract_features(replace(
+        evidence, final_url="https://example.ir/", redirect_chain=["https://example.ir/"]
+    ), facts)
+    actual, used = _rf_input_features(extract_features(evidence, facts), evidence, facts, True)
+    assert used
+    assert actual == expected
 
 
 def test_the_full_url_features_are_still_what_the_caller_holds() -> None:

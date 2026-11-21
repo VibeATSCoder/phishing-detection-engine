@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import replace
 from pathlib import Path
@@ -60,7 +61,10 @@ async def test_agent_client_submits_provided_html_and_polls_only_configured_orig
         assert request.url.path == "/api/v1/analyses/abc123"
         return httpx.Response(
             200,
-            json={"analysis_id": "abc123", "status": "completed", "result": completed_result()},
+            json={"analysis_id": "abc123", "status": "completed", "result": completed_result(
+                timings_ms={"rag": 12.5, "analyst": 37, "verifier": True, "unknown": 40},
+                review_passes={"analyst": {"verdict_candidate": "legitimate", "risk_score": 0.1}},
+            )},
         )
 
     client = AgentClient("http://review:8090", api_key="internal-secret")
@@ -80,6 +84,10 @@ async def test_agent_client_submits_provided_html_and_polls_only_configured_orig
         await client.close()
     assert result.analysis_id == "abc123"
     assert result.verdict_candidate == "suspicious"
+    assert result.timings_ms == {"rag": 12.5, "analyst": 37}
+    assert result.audit_summary()["review_passes"] == {
+        "analyst": {"verdict_candidate": "legitimate", "risk_score": 0.1},
+    }
     assert [request.url.host for request in requests] == ["review", "review"]
 
 
@@ -337,6 +345,8 @@ async def test_detector_routes_only_usable_suspicious_case_to_agent(monkeypatch,
     assert result.verdict == Verdict.SUSPICIOUS
     assert result.stage == "agent"
     assert len(agent.calls) == 1
+    assert result.latency_ms["fast_models"] >= 0
+    assert result.evidence_summary["fast_verdict"] == "suspicious"
     assert agent.calls[0]["suspect_html"] == evidence.html
     assert agent.calls[0]["references"] == references
     assert agent.calls[0]["upstream"]["rf_score"] == 0.4
@@ -378,6 +388,30 @@ async def test_detector_does_not_call_agent_when_crawl_failed(tmp_path: Path):
     assert agent.calls == []
 
 
+@pytest.mark.asyncio
+async def test_detector_stops_on_http_403_before_browser_or_scores(tmp_path: Path):
+    from unittest.mock import AsyncMock, Mock
+
+    evidence = CrawlEvidence(
+        target_url="https://blocked.example/", source="http", http_status=403,
+        status=CrawlStatus.BLOCKED, quality_reasons=["http_403"],
+    )
+    agent = FakeAgent(review("phishing", 0.99, 0.99))
+    detector = make_detector(tmp_path, evidence, Verdict.SUSPICIOUS, agent)
+    detector.browser = AsyncMock()
+    detector.jev = AsyncMock()
+    detector.tcn = Mock()
+    result = await detector.detect(evidence.target_url, use_jev=True)
+    assert result.verdict == Verdict.CRAWL_FAILED
+    assert result.reason_codes == ["crawl_not_usable", "http_403"]
+    assert result.model_scores == {"rf": None, "tcn": None}
+    assert "browser" not in result.latency_ms
+    detector.browser.fetch.assert_not_awaited()
+    detector.jev.score.assert_not_awaited()
+    detector.tcn.predict.assert_not_called()
+    assert agent.calls == []
+
+
 @pytest.fixture
 def cascade_inputs(monkeypatch):
     async def facts(_url, _allow_private):
@@ -387,6 +421,32 @@ def cascade_inputs(monkeypatch):
     monkeypatch.setattr(orchestrator_module, "collect_domain_facts", facts)
     monkeypatch.setattr(orchestrator_module, "extract_features", lambda *_: features)
     return features
+
+
+@pytest.mark.asyncio
+async def test_prefetch_overlaps_jev_and_preserves_review_input(tmp_path, cascade_inputs):
+    agent = FakeAgent(review("suspicious", 0.5, 0.49))
+    evidence = usable_evidence()
+    detector = make_detector(tmp_path, evidence, Verdict.SUSPICIOUS, agent)
+    detector.config = replace(detector.config, agent_prefetch_references=True)
+    jev_started = asyncio.Event()
+    prefetch_started = asyncio.Event()
+
+    async def screen(**_kwargs):
+        jev_started.set()
+        await asyncio.wait_for(prefetch_started.wait(), 1)
+        return JevFinding(ok=True, label="phishing", phishing_score=0.8, confidence=0.9)
+
+    async def prefetch(**kwargs):
+        await asyncio.wait_for(jev_started.wait(), 1)
+        assert kwargs == {"suspect_url": evidence.final_url, "suspect_html": evidence.html}
+        prefetch_started.set()
+
+    detector.jev = SimpleNamespace(score=screen)
+    agent.prefetch_references = prefetch
+    result = await detector.detect(evidence.target_url, use_jev=True)
+    assert result.stage == "agent"
+    assert "jev_label:phishing" in agent.calls[0]["upstream"]["reason_codes"]
 
 
 @pytest.mark.asyncio
@@ -605,3 +665,73 @@ def test_absent_reference_matches_mean_zero_retrieved():
     summary = review.audit_summary()
     assert summary["references_retrieved"] == 0
     assert summary["reference_matches"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stages", [
+    ("rf",), ("decision",), ("rag",), ("agent",),
+    ("decision", "rag", "rf", "agent"), ("agent", "rf", "decision", "rag"),
+])
+async def test_explicit_pipeline_runs_selected_stages_in_order(monkeypatch, tmp_path, stages):
+    from unittest.mock import AsyncMock
+
+    calls = []
+    agent = FakeAgent(review("suspicious", 0.5, 0.49))
+    ref = {"reference_id": "rag_example", "html": "<html>reference</html>"}
+
+    async def retrieve(**kwargs):
+        calls.append("rag")
+        return [ref], [{"official_url": "https://official.example/"}]
+
+    async def agent_review(**kwargs):
+        calls.append("agent")
+        assert kwargs["automatic_references"] is False
+        expected = [ref] if "rag" in stages[:stages.index("agent")] else []
+        assert kwargs["references"] == expected
+        return agent.result
+
+    async def decision(*args):
+        calls.append("decision")
+        return Verdict.SUSPICIOUS, {"status": "completed", "risk": 0.4}, []
+
+    detector = make_detector(tmp_path, usable_evidence(), Verdict.SUSPICIOUS, agent)
+    score_fast = detector._score_fast
+
+    def rf(*args):
+        calls.append("rf")
+        return score_fast(*args)
+
+    monkeypatch.setattr(agent, "retrieve_references", retrieve, raising=False)
+    monkeypatch.setattr(agent, "review", agent_review)
+    monkeypatch.setattr(detector, "_score_fast", rf)
+    monkeypatch.setattr(detector, "_pipeline_decision", decision)
+    monkeypatch.setattr(orchestrator_module, "collect_domain_facts", AsyncMock(return_value=DomainFacts()))
+    monkeypatch.setattr(orchestrator_module, "extract_features", lambda *_: base_features())
+
+    result = await detector.detect("https://suspect.example/", pipeline=stages)
+    assert result.verdict == Verdict.SUSPICIOUS
+    assert calls == list(stages)
+    assert [step["status"] for step in result.evidence_summary["pipeline"]] == ["completed"] * len(stages)
+    assert "<html" not in json.dumps(result.to_dict()).lower()
+
+
+@pytest.mark.asyncio
+async def test_explicit_pipeline_skips_following_steps_on_rf_flag_and_all_steps_on_403(monkeypatch, tmp_path):
+    from unittest.mock import AsyncMock
+
+    agent = FakeAgent(review("suspicious", 0.5, 0.49))
+    evidence = usable_evidence()
+    detector = make_detector(tmp_path, evidence, Verdict.PHISHING, agent)
+    monkeypatch.setattr(orchestrator_module, "collect_domain_facts", AsyncMock(return_value=DomainFacts()))
+    monkeypatch.setattr(orchestrator_module, "extract_features", lambda *_: base_features())
+    pipeline = ("rf", "decision", "rag", "agent")
+    flagged = await detector.detect("https://suspect.example/", pipeline=pipeline)
+    assert flagged.verdict == Verdict.PHISHING
+    assert flagged.stage == "rf"
+    assert [s["status"] for s in flagged.evidence_summary["pipeline"]] == ["completed", "skipped", "skipped", "skipped"]
+
+    detector.http.evidence = replace(evidence, status=CrawlStatus.BLOCKED, http_status=403)
+    failed = await detector.detect("https://suspect.example/", pipeline=pipeline)
+    assert failed.verdict == Verdict.CRAWL_FAILED
+    assert [s["status"] for s in failed.evidence_summary["pipeline"]] == ["skipped"] * 4
+    assert not agent.calls

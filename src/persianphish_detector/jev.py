@@ -1,5 +1,4 @@
-"""JEV: an optional first-pass content screener behind a configurable
-OpenAI-compatible endpoint (Avalai, OpenRouter, a local model, ...).
+"""Optional JEV content screening through chat completions or typed decisions.
 
 It is advisory and recall-first. It receives only the page's bounded visible
 text and a structural summary - never raw HTML, form values, headers, or script
@@ -20,6 +19,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Tuple
 from urllib.parse import urlsplit
 
+from .jev_decisions import decisions_payload, decisions_scores
 from .types import Verdict
 
 if TYPE_CHECKING:
@@ -153,13 +153,14 @@ class JevFinding:
 
 
 class JevClient:
-    """Minimal OpenAI-compatible chat-completions client for the screener."""
+    """Call the selected endpoint and normalize its answer for detector policy."""
 
     def __init__(
         self,
         *,
         base_url: str,
         model: str,
+        api_format: str = "chat_completions",
         api_key: str = "",
         timeout_s: float = 20.0,
         max_text_chars: int = 8000,
@@ -168,6 +169,9 @@ class JevClient:
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
+        if api_format not in {"chat_completions", "decisions"}:
+            raise ValueError("invalid_jev_api_format")
+        self.api_format = api_format
         self.api_key = api_key
         self.timeout_s = timeout_s
         self.max_text_chars = max_text_chars
@@ -219,19 +223,23 @@ class JevClient:
             return JevFinding(error="jev_not_configured")
         started = time.perf_counter()
         try:
+            packet = self._packet(url, visible_text, structure)
+            if self.api_format == "decisions":
+                path = "/decisions"
+                payload = decisions_payload(self.model, packet)
+            else:
+                path = "/chat/completions"
+                payload = {
+                    "model": self.model,
+                    "temperature": 0,
+                    "max_tokens": 400,
+                    "messages": [
+                        {"role": "system", "content": JEV_SYSTEM_PROMPT},
+                        {"role": "user", "content": packet},
+                    ],
+                }
             response = await asyncio.wait_for(
-                self._http().post(
-                    "/chat/completions",
-                    json={
-                        "model": self.model,
-                        "temperature": 0,
-                        "max_tokens": 400,
-                        "messages": [
-                            {"role": "system", "content": JEV_SYSTEM_PROMPT},
-                            {"role": "user", "content": self._packet(url, visible_text, structure)},
-                        ],
-                    },
-                ),
+                self._http().post(path, json=payload),
                 timeout=self.timeout_s,
             )
             if getattr(response, "status_code", 0) != 200:
@@ -244,7 +252,12 @@ class JevClient:
                     error="response_too_large",
                     latency_ms=(time.perf_counter() - started) * 1000,
                 )
-            content = response.json()["choices"][0]["message"]["content"]
+            body = response.json()
+            if self.api_format == "decisions":
+                parsed = decisions_scores(body)
+            else:
+                content = body["choices"][0]["message"]["content"]
+                parsed = _first_json_object(content if isinstance(content, str) else "")
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning("jev call failed: %s", type(exc).__name__)
             return JevFinding(
@@ -252,10 +265,9 @@ class JevClient:
                 latency_ms=(time.perf_counter() - started) * 1000,
             )
 
-        parsed = _first_json_object(content if isinstance(content, str) else "")
         if not isinstance(parsed, dict):
             return JevFinding(
-                error="unparseable_response",
+                error="invalid_response_schema" if self.api_format == "decisions" else "unparseable_response",
                 latency_ms=(time.perf_counter() - started) * 1000,
             )
         label = parsed.get("label")

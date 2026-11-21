@@ -20,7 +20,7 @@ from .observability import (
     instrument_app,
     set_build_info,
 )
-from .orchestrator import Detector
+from .orchestrator import Detector, PIPELINE_STAGES, PipelineStage
 from .url_utils import canonical_url
 
 
@@ -89,9 +89,15 @@ class DetectRequest(BaseModel):
     use_jev: Optional[bool] = None
     #: False skips the RF/TCN ensemble. True uses it when enabled by the service.
     use_rf: Optional[bool] = None
+    pipeline: list[PipelineStage] | None = Field(default=None, min_length=1, max_length=4)
 
     @model_validator(mode="after")
     def validate_total_reference_size(self) -> "DetectRequest":
+        if self.pipeline is not None:
+            if len(self.pipeline) != len(set(self.pipeline)):
+                raise ValueError("duplicate_pipeline_stage")
+            if self.use_rf is not None or self.use_jev is not None or self.agent_references:
+                raise ValueError("pipeline_conflicts_with_legacy_stage_controls")
         total = sum(len(item.html.encode("utf-8", errors="replace")) for item in self.agent_references)
         if total > 5_000_000:
             raise ValueError("agent_reference_total_too_large")
@@ -203,6 +209,20 @@ def create_app(config: DetectorConfig | None = None) -> FastAPI:
             },
         )
 
+    @app.get("/v1/pipeline", dependencies=[Depends(api_key_scheme)])
+    async def pipeline_capabilities(request: Request) -> dict[str, Any]:
+        detector: Detector = request.app.state.detector
+        return {
+            "service_version": __version__,
+            "stages": list(PIPELINE_STAGES),
+            "configured": {
+                "rf": selected_config.fast_models_enabled and detector.artifact is not None,
+                "decision": detector.jev is not None or detector.jev_local is not None,
+                "rag": detector.agent is not None,
+                "agent": detector.agent is not None,
+            },
+        }
+
     @app.post("/v1/detect", dependencies=[Depends(api_key_scheme)])
     async def detect(payload: DetectRequest, request: Request) -> Dict[str, Any]:
         detector: Detector = request.app.state.detector
@@ -211,6 +231,7 @@ def create_app(config: DetectorConfig | None = None) -> FastAPI:
         result = await detector.detect(
             payload.url, browser_payload, agent_references,
             use_jev=payload.use_jev, use_rf=payload.use_rf,
+            **({"pipeline": payload.pipeline} if payload.pipeline is not None else {}),
         )
         return result.to_dict()
 

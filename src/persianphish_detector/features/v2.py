@@ -375,6 +375,7 @@ def _html_features(evidence: CrawlEvidence) -> Dict[str, float]:
     base_url = evidence.final_url or evidence.target_url
     collector = collect_page(html, base_url)
     text = " ".join(collector.text_parts)
+    lower_text = text.lower()
     title = " ".join(collector.title_parts)
     words = re.findall(r"[\w\u0600-\u06ff]+", text, re.UNICODE)
     persian_chars = re.findall(r"[\u0600-\u06ff]", text)
@@ -385,8 +386,8 @@ def _html_features(evidence: CrawlEvidence) -> Dict[str, float]:
     network_domains = [registrable_domain(host) for host in evidence.network_hosts]
     base_domain = _domain_of_url(base_url)
     external_network = sum(bool(item and item != base_domain) for item in network_domains)
-    keyword_count = sum(text.lower().count(word) for word in CREDENTIAL_WORDS)
-    captcha_count = sum(text.lower().count(word) for word in CAPTCHA_WORDS)
+    keyword_count = sum(lower_text.count(word) for word in CREDENTIAL_WORDS)
+    captcha_count = sum(lower_text.count(word) for word in CAPTCHA_WORDS)
     headers = {key.lower(): value for key, value in evidence.response_headers.items()}
     html_bytes = len(html.encode("utf-8", errors="replace"))
     return {
@@ -472,3 +473,10 @@ def feature_vector(features: Mapping[str, float]) -> List[float]:
     if missing:
         raise ValueError(f"missing features: {missing}")
     return [float(features[column]) for column in FEATURE_COLUMNS]
+
+
+def origin_features(features: Mapping[str, float], origin: str) -> Dict[str, float]:
+    """Recompute URL features for the same origin without re-parsing the page."""
+    updated = dict(features)
+    updated.update({key: float(value) for key, value in _url_features(origin, [origin]).items()})
+    return updated

@@ -2,14 +2,14 @@ name: persianphish-integrated
 
 services:
   review:
-    image: agentic-phishing-review:1.11.0-integrated
+    image: agentic-phishing-review:1.12.0-integrated
     build:
       context: ${AGENT_REVIEW_CONTEXT:-../../agentic-phishing-review}
       dockerfile: Dockerfile
       target: production
       args:
         INSTALL_BROWSER: "0"
-        APP_VERSION: "1.11.0"
+        APP_VERSION: "1.12.0"
     environment:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY in .env}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-google/gemma-4-31b-it}
@@ -65,12 +65,12 @@ services:
         max-file: "3"
 
   detector:
-    image: phishing-detection-engine:3.8.3-integrated
+    image: phishing-detection-engine:3.9.0-integrated
     build:
       context: ..
       dockerfile: Dockerfile
       args:
-        APP_VERSION: "3.8.3"
+        APP_VERSION: "3.9.0"
     depends_on:
       review:
         condition: service_healthy
@@ -80,6 +80,7 @@ services:
       PPD_JEV_ENABLED: ${PPD_JEV_ENABLED:-0}
       PPD_JEV_BASE_URL: ${PPD_JEV_BASE_URL:-}
       PPD_JEV_MODEL: ${PPD_JEV_MODEL:-}
+      PPD_JEV_API_FORMAT: ${PPD_JEV_API_FORMAT:-chat_completions}
       PPD_JEV_API_KEY: ${PPD_JEV_API_KEY:-}
       PPD_JEV_LOCAL_MODEL_PATH: ${PPD_JEV_LOCAL_MODEL_PATH:-}
       PPD_JEV_LOCAL_AUTO_FLAG: ${PPD_JEV_LOCAL_AUTO_FLAG:-0}
@@ -97,6 +98,7 @@ services:
       PPD_AGENT_BASE_URL: ${PPD_AGENT_BASE_URL:-http://review:8090}
       PPD_AGENT_API_KEY: ${PPD_AGENT_API_KEY:-${INTERNAL_REVIEW_API_KEY:?Set INTERNAL_REVIEW_API_KEY in .env}}
       PPD_AGENT_TIMEOUT_S: ${PPD_AGENT_TIMEOUT_S:-75}
+      PPD_AGENT_PREFETCH_REFERENCES: ${PPD_AGENT_PREFETCH_REFERENCES:-1}
       PPD_AGENT_POLL_INTERVAL_S: ${PPD_AGENT_POLL_INTERVAL_S:-0.25}
       PPD_API_KEY: ${PPD_API_KEY:-}
     ports:

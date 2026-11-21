@@ -8,7 +8,7 @@ import uuid
 from dataclasses import asdict, replace
 from pathlib import Path
 from urllib.parse import urlsplit
-from typing import Any, Dict, Mapping, Optional, Sequence, Tuple
+from typing import Any, Dict, Literal, Mapping, Optional, Sequence, Tuple, get_args
 
 from .allowlist import CATALOG_VERSION, allowlisted_domain
 from .agent import AgentClient, AgentReview, AgentServiceError
@@ -55,6 +55,8 @@ def _rf_input_features(
     origin = f"{parsed.scheme}://{parsed.netloc}/"
     if origin == browsed:
         return features, False
+    if all(column in features for column in FEATURE_COLUMNS):
+        return origin_features(features, origin), True
     origin_view = replace(evidence, final_url=origin, redirect_chain=[origin])
     return extract_features(origin_view, facts), True
 
@@ -88,7 +90,7 @@ def _deterministic_risk(features: Mapping[str, float], combined_score: float | N
     uses _observed_risk instead.
     """
     return (combined_score is not None and combined_score >= 0.5) or _observed_risk(features)
-from .features import extract_features
+from .features import FEATURE_COLUMNS, extract_features, origin_features
 from .evidence_codes import derive_evidence
 from .intel import IntelMatch, IntelStore
 from .observability import METRICS, record_detection, span, url_labels
@@ -97,6 +99,10 @@ from .models.tcn import ONNXTCNPredictor, TCN_INPUT_CONTRACT
 from .review import ReviewStore
 from .types import CrawlEvidence, CrawlStatus, DetectionResult, Verdict
 from .url_utils import UnsafeURL, canonical_url, resolve_public_addresses
+
+
+PipelineStage = Literal["rf", "decision", "rag", "agent"]
+PIPELINE_STAGES = get_args(PipelineStage)
 
 
 class Detector:
@@ -147,6 +153,7 @@ class Detector:
         self.jev = JevClient(
             base_url=config.jev_base_url,
             model=config.jev_model,
+            api_format=config.jev_api_format,
             api_key=config.jev_api_key,
             timeout_s=config.jev_timeout_s,
             max_text_chars=config.jev_max_text_chars,
@@ -182,10 +189,11 @@ class Detector:
         use_jev: bool | None = None,
         *,
         use_rf: bool | None = None,
+        pipeline: Sequence[PipelineStage] | None = None,
     ) -> DetectionResult:
         """Trace-wrapped entry point; the pipeline itself lives in ``_detect``."""
         with span("detector.detect", **url_labels(url)):
-            return await self._detect(url, browser_evidence, agent_references, use_jev, use_rf)
+            return await self._detect(url, browser_evidence, agent_references, use_jev, use_rf, pipeline)
 
     async def _detect(
         self,
@@ -194,6 +202,7 @@ class Detector:
         agent_references: Sequence[Mapping[str, Any]] | None = None,
         use_jev: bool | None = None,
         use_rf: bool | None = None,
+        pipeline: Sequence[PipelineStage] | None = None,
     ) -> DetectionResult:
         started = time.perf_counter()
         request_id = uuid.uuid4().hex
@@ -216,7 +225,7 @@ class Detector:
             record_detection(invalid)
             return invalid
 
-        intel_match = self.intel.lookup(normalized)
+        intel_match = self.intel.lookup(normalized) if pipeline is None else None
 
         # Answered before the crawl, but after the local phishing feed has had
         # its say. The feed keeps precedence deliberately: a domain observed
@@ -230,7 +239,7 @@ class Detector:
         # reads to a user as this service being broken rather than as the site
         # declining to be read.
         allowlisted = allowlisted_domain(normalized)
-        if allowlisted and not intel_match and run_fast and not run_jev:
+        if pipeline is None and allowlisted and not intel_match and run_fast and not run_jev:
             METRICS.crawl_outcomes.labels(source="allowlist", status="skipped").inc()
             return self._result(
                 request_id, normalized, normalized, Verdict.LEGITIMATE, 0.0, "allowlist",
@@ -251,6 +260,7 @@ class Detector:
                 evidence_items=derive_evidence(intel_match=intel_match),
             )
 
+        crawl_started = time.perf_counter()
         if browser_evidence:
             try:
                 evidence = from_browser_payload(normalized, browser_evidence, self.config.min_quality_score)
@@ -273,7 +283,7 @@ class Detector:
         METRICS.crawl_outcomes.labels(
             source=evidence.source, status=evidence.status.value
         ).inc()
-        crawl_ms = evidence.elapsed_ms
+        latency = {"browser_input" if browser_evidence else "http": (time.perf_counter() - crawl_started) * 1000}
         # The browser is also the right answer when the plain fetch never got a
         # body. It used to be offered only for PARTIAL and BLOCKED, so a timeout
         # or a reset — the two failures a slow or filtered link actually
@@ -284,6 +294,7 @@ class Detector:
             not evidence.usable
             and self.browser
             and not browser_evidence
+            and evidence.http_status != 403
             and evidence.status in {
                 CrawlStatus.PARTIAL,
                 CrawlStatus.BLOCKED,
@@ -291,51 +302,67 @@ class Detector:
                 CrawlStatus.UNREACHABLE,
             }
         ):
+            browser_started = time.perf_counter()
             browser_result = await self.browser.fetch(normalized)
-            if browser_result.usable or browser_result.quality_score > evidence.quality_score:
+            latency["browser"] = (time.perf_counter() - browser_started) * 1000
+            if (
+                browser_result.usable or browser_result.http_status == 403
+                or browser_result.quality_score > evidence.quality_score
+            ):
                 evidence = browser_result
-                crawl_ms += browser_result.elapsed_ms
+        latency["crawl"] = sum(latency.values())
 
         if not evidence.usable:
-            result = self._result(
-                request_id, normalized, evidence.final_url or normalized, Verdict.CRAWL_FAILED, 0.5,
-                "browser" if evidence.source.startswith("browser") else "http",
-                evidence.status, ["crawl_not_usable", *evidence.quality_reasons],
-                {"rf": None, "tcn": self._predict_tcn(normalized) if run_fast else None}, started,
-                evidence.public_dict(), extra_latency={"crawl": crawl_ms},
-                evidence_items=derive_evidence(crawl_status=evidence.status.value),
+            return self._failed_crawl(
+                request_id, normalized, evidence, run_fast and pipeline is None, started, latency,
+                pipeline=pipeline,
             )
-            self._enqueue(result)
-            self._persist(result)
-            return result
+        if pipeline is not None:
+            return await self._ordered_pipeline(request_id, normalized, evidence, pipeline, started, latency)
 
         facts_started = time.perf_counter()
         facts = await collect_domain_facts(evidence.final_url or normalized, self.config.allow_private_network)
-        facts_ms = (time.perf_counter() - facts_started) * 1000
+        latency["domain_facts"] = (time.perf_counter() - facts_started) * 1000
+        features_started = time.perf_counter()
         features = await asyncio.to_thread(extract_features, evidence, facts)
+        latency["features"] = (time.perf_counter() - features_started) * 1000
+        models_started = time.perf_counter()
         verdict, reasons, scores = self._score_fast(features, evidence, facts, intel_match, run_fast)
+        if run_fast:
+            latency["fast_models"] = (time.perf_counter() - models_started) * 1000
 
         # An uncertain HTTP-only result receives one browser-rendered pass so
         # the deterministic model and review service see the same final DOM.
         if verdict == Verdict.SUSPICIOUS and self.browser and evidence.source == "http":
+            browser_started = time.perf_counter()
             rendered = await self.browser.fetch(normalized)
-            crawl_ms += rendered.elapsed_ms
+            latency["browser"] = (time.perf_counter() - browser_started) * 1000
+            latency["crawl"] += latency["browser"]
+            if rendered.http_status == 403:
+                return self._failed_crawl(request_id, normalized, rendered, run_fast, started, latency)
             if rendered.usable:
                 evidence = rendered
                 facts_started = time.perf_counter()
                 facts = await collect_domain_facts(evidence.final_url or normalized, self.config.allow_private_network)
-                facts_ms += (time.perf_counter() - facts_started) * 1000
+                latency["domain_facts"] += (time.perf_counter() - facts_started) * 1000
+                features_started = time.perf_counter()
                 features = await asyncio.to_thread(extract_features, evidence, facts)
+                latency["features"] += (time.perf_counter() - features_started) * 1000
+                models_started = time.perf_counter()
                 verdict, reasons, scores = self._score_fast(
                     features, evidence, facts, intel_match, run_fast
                 )
+                if run_fast:
+                    latency["fast_models"] += (time.perf_counter() - models_started) * 1000
                 reasons.append("browser_rendered_recheck")
 
+        fast_verdict = verdict.value if run_fast and self.artifact is not None else None
         combined = scores["combined"]
         enamad_audit: dict[str, Any] | None = None
         if self.config.enamad_verify and evidence.usable:
             seal = extract_seal(evidence.html or "")
             if seal is not None:
+                enamad_started = time.perf_counter()
                 result_enamad = await verify_seal(
                     seal,
                     evidence.final_url or normalized,
@@ -361,6 +388,7 @@ class Detector:
                     if await service_is_answering(self._enamad_http(), timeout_s=self.config.enamad_timeout_s):
                         reasons.append("enamad_seal_not_certified_for_host")
                         enamad_audit["refusal_confirmed"] = True
+                latency["enamad"] = (time.perf_counter() - enamad_started) * 1000
 
         # A requested screener must sign off on a fast clear. Its risk and
         # confidence remain separate from the calibrated scores.
@@ -390,18 +418,19 @@ class Detector:
             jev_started = time.perf_counter()
             if self.jev is None:
                 finding = JevFinding(error="jev_not_configured")
-            else:
-                visible = await asyncio.to_thread(
-                    screening_text, evidence.html, self.config.jev_max_text_chars
+            elif (
+                self.config.agent_prefetch_references and self.agent and not agent_references
+                and verdict == Verdict.SUSPICIOUS
+                and (run_fast or not self.config.jev_short_circuit_legit)
+            ):
+                finding, _ = await asyncio.gather(
+                    self._screen(evidence, normalized, features),
+                    self.agent.prefetch_references(
+                        suspect_url=evidence.final_url or normalized, suspect_html=evidence.html,
+                    ),
                 )
-                if visible:
-                    finding = await self.jev.score(
-                        url=evidence.final_url or normalized,
-                        visible_text=visible,
-                        structure=jev_structure(features, evidence.final_url or normalized),
-                    )
-                else:
-                    finding = JevFinding(error="jev_empty_visible_text")
+            else:
+                finding = await self._screen(evidence, normalized, features)
             jev_ms = (time.perf_counter() - jev_started) * 1000
             verdict, jev_reasons = apply_jev(
                 verdict,
@@ -471,6 +500,8 @@ class Detector:
             agent_ms = 0.0
 
         evidence_summary = evidence.public_dict()
+        if fast_verdict is not None:
+            evidence_summary["fast_verdict"] = fast_verdict
         if enamad_audit is not None:
             evidence_summary["enamad"] = enamad_audit
         if jev_audit is not None:
@@ -492,7 +523,7 @@ class Detector:
             risk_score,
             stage,
             evidence.status, reasons, scores, started, evidence_summary,
-            extra_latency={"crawl": crawl_ms, "domain_facts": facts_ms, "agent": agent_ms, "jev": jev_ms},
+            extra_latency={**latency, "agent": agent_ms, "jev": jev_ms},
             evidence_items=derive_evidence(
                 features,
                 intel_match=intel_match,
@@ -502,6 +533,157 @@ class Detector:
         )
         if result.verdict in {Verdict.SUSPICIOUS, Verdict.CRAWL_FAILED}:
             self._enqueue(result)
+        self._persist(result)
+        return result
+
+    async def _ordered_pipeline(
+        self, request_id: str, url: str, evidence: CrawlEvidence,
+        pipeline: Sequence[PipelineStage], started: float, latency: dict[str, float],
+    ) -> DetectionResult:
+        final_url = evidence.final_url or url
+        verdict = Verdict.SUSPICIOUS
+        reasons: list[str] = []
+        features: Mapping[str, float] | None = None
+        scores: dict[str, float | None] = dict.fromkeys(("rf", "tcn", "combined", "ood_fraction"))
+        risk = 0.5
+        decisive_stage = "pipeline"
+        steps: list[dict[str, Any]] = []
+        summary = evidence.public_dict()
+        summary["pipeline"] = steps
+        references: list[dict[str, Any]] = []
+        agent_codes: list[str] = []
+        decision_blocks_clear = False
+
+        for stage in pipeline:
+            if verdict != Verdict.SUSPICIOUS:
+                steps.append({"stage": stage, "status": "skipped"})
+                continue
+            step: dict[str, Any] = {"stage": stage, "status": "completed"}
+            steps.append(step)
+            stage_started = time.perf_counter()
+            try:
+                if stage == "rf":
+                    if not self.config.fast_models_enabled or self.artifact is None:
+                        raise AgentServiceError("fast_models_unavailable")
+                    facts = await collect_domain_facts(final_url, self.config.allow_private_network)
+                    features = await asyncio.to_thread(extract_features, evidence, facts)
+                    verdict, rf_reasons, scores = self._score_fast(features, evidence, facts, None, True)
+                    summary["fast_verdict"] = verdict.value
+                    reasons.extend(rf_reasons)
+                    if verdict == Verdict.LEGITIMATE and decision_blocks_clear:
+                        verdict = Verdict.SUSPICIOUS
+                        reasons.append("decision_model_requires_review")
+                    risk = scores["combined"] if scores["combined"] is not None else risk
+                elif stage == "decision":
+                    if features is None:
+                        features = await asyncio.to_thread(extract_features, evidence, DomainFacts())
+                    verdict, opinion, decision_reasons = await self._pipeline_decision(evidence, url, features)
+                    summary["jev" if self.jev is not None else "jev_local"] = opinion
+                    reasons.extend(decision_reasons)
+                    decision_blocks_clear = (
+                        opinion["status"] != "completed"
+                        or "jev_escalated_to_review" in decision_reasons
+                        or "jev_local_review_threshold" in decision_reasons
+                    )
+                    if opinion["risk"] is not None:
+                        risk = opinion["risk"]
+                    step["status"] = opinion["status"]
+                elif stage == "rag":
+                    if self.agent is None:
+                        raise AgentServiceError("reference_service_unconfigured")
+                    references, matches = await self.agent.retrieve_references(
+                        suspect_url=final_url, suspect_html=evidence.html,
+                    )
+                    summary["rag"] = {"references_retrieved": len(references), "reference_matches": matches}
+                    reasons.append("rag_references_retrieved" if references else "rag_no_references")
+                elif stage == "agent":
+                    if self.agent is None:
+                        raise AgentServiceError("agent_service_not_configured")
+                    if features is None:
+                        features = await asyncio.to_thread(extract_features, evidence, DomainFacts())
+                    review = await self.agent.review(
+                        suspect_url=final_url, suspect_html=evidence.html,
+                        upstream={
+                            "request_id": request_id, "rf_score": scores["rf"], "tcn_score": scores["tcn"],
+                            "combined_score": scores["combined"], "reason_codes": reasons,
+                        },
+                        references=references, automatic_references=False,
+                    )
+                    verdict, agent_reasons = self._reconcile_agent(review, features, scores["combined"], evidence)
+                    reasons.extend(agent_reasons)
+                    summary["agent_review"] = {"status": "completed", **review.audit_summary()}
+                    agent_codes = list(review.evidence_codes)
+                    risk = review.risk_score if review.risk_score is not None else risk
+            except Exception as exc:
+                code = exc.code if isinstance(exc, AgentServiceError) else type(exc).__name__.lower()
+                LOGGER.warning("%s pipeline stage failed: %s", stage, code)
+                step.update(status="unavailable", error_code=code)
+                reasons.append(f"{stage}_unavailable")
+                if stage == "decision":
+                    decision_blocks_clear = True
+            duration = (time.perf_counter() - stage_started) * 1000
+            latency[stage] = duration
+            step.update(verdict=verdict.value, latency_ms=round(duration, 3))
+            if verdict != Verdict.SUSPICIOUS:
+                decisive_stage = stage
+
+        result = self._result(
+            request_id, url, final_url, verdict, risk, decisive_stage, evidence.status, reasons,
+            scores, started, summary, extra_latency=latency,
+            evidence_items=derive_evidence(features, crawl_status=evidence.status.value, agent_codes=agent_codes),
+        )
+        if verdict == Verdict.SUSPICIOUS:
+            self._enqueue(result)
+        self._persist(result)
+        return result
+
+    async def _pipeline_decision(
+        self, evidence: CrawlEvidence, url: str, features: Mapping[str, float],
+    ) -> tuple[Verdict, dict[str, Any], list[str]]:
+        if self.jev is not None:
+            finding = await self._screen(evidence, url, features)
+            verdict, reasons = apply_jev(
+                Verdict.SUSPICIOUS, finding,
+                _observed_risk(features) or features["unicode_confusable_count"] > 0
+                or features["cross_domain_redirect_count"] > 0,
+                self.config, standalone=True,
+            )
+            return verdict, finding.audit_summary(), reasons
+        if self.jev_local is None:
+            raise AgentServiceError("decision_model_unconfigured")
+        risk = await asyncio.to_thread(self.jev_local.score, features)
+        verdict, reason = self.jev_local.decide(
+            Verdict.SUSPICIOUS, risk, auto_flag=self.config.jev_local_auto_flag,
+        )
+        return verdict, {"status": "completed", "risk": risk, "decision": reason}, [reason]
+
+    async def _screen(
+        self, evidence: CrawlEvidence, normalized: str, features: Mapping[str, float],
+    ) -> JevFinding:
+        assert self.jev is not None
+        visible = await asyncio.to_thread(screening_text, evidence.html, self.config.jev_max_text_chars)
+        if not visible:
+            return JevFinding(error="jev_empty_visible_text")
+        url = evidence.final_url or normalized
+        return await self.jev.score(url=url, visible_text=visible, structure=jev_structure(features, url))
+
+    def _failed_crawl(
+        self, request_id: str, normalized: str, evidence: CrawlEvidence, run_fast: bool,
+        started: float, latency: Mapping[str, float],
+        *, pipeline: Sequence[PipelineStage] | None = None,
+    ) -> DetectionResult:
+        summary = evidence.public_dict()
+        if pipeline is not None:
+            summary["pipeline"] = [{"stage": stage, "status": "skipped"} for stage in pipeline]
+        result = self._result(
+            request_id, normalized, evidence.final_url or normalized, Verdict.CRAWL_FAILED, 0.5,
+            "browser" if evidence.source.startswith("browser") else "http",
+            evidence.status, ["crawl_not_usable", *evidence.quality_reasons],
+            {"rf": None, "tcn": self._predict_tcn(normalized) if run_fast and evidence.http_status != 403 else None},
+            started, summary, extra_latency=latency,
+            evidence_items=derive_evidence(crawl_status=evidence.status.value),
+        )
+        self._enqueue(result)
         self._persist(result)
         return result
 

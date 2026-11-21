@@ -15,19 +15,19 @@ ROOT = Path(__file__).resolve().parents[1]
 def test_component_versions_and_compose_are_synchronized():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     project_version = re.search(r'^version\s*=\s*"([^"]+)"', pyproject, flags=re.MULTILINE)
-    assert project_version and project_version.group(1) == __version__ == "3.8.3"
+    assert project_version and project_version.group(1) == __version__ == "3.9.0"
 
     contract = json.loads((ROOT / "deploy" / "COMPATIBILITY.json").read_text(encoding="utf-8"))
-    assert contract["components"]["detector"]["version"] == "3.8.3"
+    assert contract["components"]["detector"]["version"] == "3.9.0"
     # Versioned independently of the detector; the manifest is the authority
     # and test_recorded_extension_version_matches_the_extension_repository
     # compares against it.
-    assert contract["components"]["extension"]["version"] == "3.8.3"
-    assert contract["components"]["reviewer"]["version"] == "1.11.0"
+    assert contract["components"]["extension"]["version"] == "3.10.0"
+    assert contract["components"]["reviewer"]["version"] == "1.12.0"
     # Reference retrieval is optional: the reviewer runs without it and simply
     # supplies no references, so a deployment lacking it is degraded rather than
     # broken. The flag is asserted so that status stays deliberate.
-    assert contract["components"]["rag"]["version"] == "2.1.0"
+    assert contract["components"]["rag"]["version"] == "2.2.0"
     assert contract["components"]["rag"]["optional"] is True
     assert contract["contracts"]["reviewer_to_rag"] == "POST /v1/references"
     assert contract["contracts"]["verdicts"] == [
@@ -35,8 +35,8 @@ def test_component_versions_and_compose_are_synchronized():
     ]
 
     compose = (ROOT / "deploy" / "compose.yaml").read_text(encoding="utf-8")
-    assert "phishing-detection-engine:3.8.3-integrated" in compose  # build-from-source tag
-    assert "agentic-phishing-review:1.11.0-integrated" in compose
+    assert "phishing-detection-engine:3.9.0-integrated" in compose  # build-from-source tag
+    assert "agentic-phishing-review:1.12.0-integrated" in compose
     assert "${AGENT_REVIEW_CONTEXT:-../../agentic-phishing-review}" in compose
     # The contract declares a reviewer-to-rag call. If the integrated stack
     # cannot reach a reference service, that declaration describes nothing: the
@@ -65,25 +65,23 @@ def test_recorded_extension_version_matches_the_extension_repository():
     The extension version was once recorded here as one number while the
     shipped manifest said another. Nothing noticed, because the assertion above
     and the contract were the same stale constant restating each other.
-    Compare with the upstream extension manifest when its main ref is available.
-    A feature branch checkout does not change the released stack contract.
+    Compare with the matching extension tag when it is present locally.
+    Before tagging, compare with the sibling checkout used for this release.
     """
     manifest_path = ROOT.parent / "phishingshield-persian" / "manifest.json"
     if not manifest_path.is_file():
         pytest.skip("extension repository not checked out beside this one")
-    if (manifest_path.parent / ".git").exists() and shutil.which("git"):
-        upstream = subprocess.run(
-            ["git", "show", "refs/remotes/origin/main:manifest.json"],
-            cwd=manifest_path.parent, encoding="utf-8", capture_output=True,
-        )
-        manifest_source = upstream.stdout if upstream.returncode == 0 else subprocess.check_output(
-            ["git", "show", "HEAD:manifest.json"], cwd=manifest_path.parent, encoding="utf-8",
-        )
-    else:
-        manifest_source = manifest_path.read_text(encoding="utf-8")
-    manifest = json.loads(manifest_source)
     contract = json.loads((ROOT / "deploy" / "COMPATIBILITY.json").read_text(encoding="utf-8"))
     recorded = contract["components"]["extension"]["version"]
+    manifest_source = manifest_path.read_text(encoding="utf-8")
+    if (manifest_path.parent / ".git").exists() and shutil.which("git"):
+        tagged = subprocess.run(
+            ["git", "show", f"refs/tags/v{recorded}:manifest.json"],
+            cwd=manifest_path.parent, encoding="utf-8", capture_output=True,
+        )
+        if tagged.returncode == 0:
+            manifest_source = tagged.stdout
+    manifest = json.loads(manifest_source)
     assert manifest["version"] == recorded, (
         f"extension manifest is {manifest['version']} but deploy/COMPATIBILITY.json "
         f"records {recorded}"
@@ -93,7 +91,7 @@ def test_recorded_extension_version_matches_the_extension_repository():
 def test_clean_docker_build_does_not_require_runtime_database():
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "COPY var" not in dockerfile
-    assert 'ARG APP_VERSION=3.8.3' in dockerfile
+    assert 'ARG APP_VERSION=3.9.0' in dockerfile
 
 
 def test_shipped_requirements_carry_the_observability_extra():

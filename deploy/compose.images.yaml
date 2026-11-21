@@ -5,7 +5,7 @@ services:
     # The tag the reviewer's release actually publishes. It used to carry an
     # "-integrated" suffix that no release ever produced, so loading the
     # published artefact left Compose looking for an image that did not exist.
-    image: agentic-phishing-review:${REVIEW_VERSION:-1.11.0}
+    image: agentic-phishing-review:${REVIEW_VERSION:-1.12.0}
     platform: linux/amd64
     # These images are distributed as saved artefacts, never pushed to a
     # registry, so a missing tag should say so rather than attempt a pull.
@@ -74,7 +74,7 @@ services:
       options: {max-size: "10m", max-file: "3"}
 
   detector:
-    image: phishing-detection-engine:${DETECTOR_VERSION:-3.8.3}
+    image: phishing-detection-engine:${DETECTOR_VERSION:-3.9.0}
     platform: linux/amd64
     pull_policy: never
     depends_on:
@@ -86,6 +86,7 @@ services:
       PPD_JEV_ENABLED: ${PPD_JEV_ENABLED:-0}
       PPD_JEV_BASE_URL: ${PPD_JEV_BASE_URL:-}
       PPD_JEV_MODEL: ${PPD_JEV_MODEL:-}
+      PPD_JEV_API_FORMAT: ${PPD_JEV_API_FORMAT:-chat_completions}
       PPD_JEV_API_KEY: ${PPD_JEV_API_KEY:-}
       PPD_JEV_LOCAL_MODEL_PATH: ${PPD_JEV_LOCAL_MODEL_PATH:-}
       PPD_JEV_LOCAL_AUTO_FLAG: ${PPD_JEV_LOCAL_AUTO_FLAG:-0}
@@ -103,6 +104,7 @@ services:
       PPD_AGENT_BASE_URL: ${PPD_AGENT_BASE_URL:-http://review:8090}
       PPD_AGENT_API_KEY: ${PPD_AGENT_API_KEY:-${INTERNAL_REVIEW_API_KEY:?Set INTERNAL_REVIEW_API_KEY in .env}}
       PPD_AGENT_TIMEOUT_S: ${PPD_AGENT_TIMEOUT_S:-75}
+      PPD_AGENT_PREFETCH_REFERENCES: ${PPD_AGENT_PREFETCH_REFERENCES:-1}
       PPD_AGENT_POLL_INTERVAL_S: ${PPD_AGENT_POLL_INTERVAL_S:-0.25}
       PPD_API_KEY: ${PPD_API_KEY:-}
     ports:

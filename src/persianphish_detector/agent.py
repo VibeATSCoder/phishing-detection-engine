@@ -98,6 +98,7 @@ MAX_TOTAL_REFERENCE_HTML_BYTES = 5_000_000
 MAX_RESPONSE_BYTES = 1_000_000
 SAFE_REASON_CODE = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
 SAFE_ANALYSIS_ID = re.compile(r"^[A-Za-z0-9]{1,64}$")
+REVIEW_TIMING_FIELDS = ("validate", "crawl", "ingest", "extract", "rag", "compare", "analyst", "verifier", "brand", "reconcile", "total")
 
 
 class AgentServiceError(RuntimeError):
@@ -120,6 +121,8 @@ class AgentReview:
     model: str = ""
     references_retrieved: int = 0
     reference_matches: list[Dict[str, Any]] = field(default_factory=list)
+    timings_ms: Dict[str, float] = field(default_factory=dict)
+    review_passes: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     def audit_summary(self) -> Dict[str, Any]:
         return {
@@ -139,6 +142,8 @@ class AgentReview:
             # nothing; the verdict then rests on the non-reference evidence.
             "references_retrieved": self.references_retrieved,
             "reference_matches": list(self.reference_matches),
+            "timings_ms": dict(self.timings_ms),
+            "review_passes": dict(self.review_passes),
         }
 
 
@@ -233,6 +238,31 @@ def _finite_probability(value: Any, *, nullable: bool = False) -> Optional[float
     if not 0.0 <= number <= 1.0:
         raise AgentServiceError("agent_result_invalid_probability")
     return number
+
+
+def _review_timings(value: Any) -> Dict[str, float]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        key: round(value[key], 3) for key in REVIEW_TIMING_FIELDS
+        if type(value.get(key)) in {int, float} and 0 <= value[key] <= 86_400_000
+    }
+
+
+def _review_passes(value: Any) -> Dict[str, Dict[str, Any]]:
+    if not isinstance(value, dict):
+        return {}
+    passes = {}
+    for name in ("analyst", "verifier"):
+        item = value.get(name)
+        if not isinstance(item, dict):
+            continue
+        verdict, risk = item.get("verdict_candidate"), item.get("risk_score")
+        if isinstance(verdict, str) and verdict in ALLOWED_AGENT_VERDICTS - {"crawl_failed"} and (
+            type(risk) in {int, float} and 0 <= risk <= 1
+        ):
+            passes[name] = {"verdict_candidate": verdict, "risk_score": round(risk, 4)}
+    return passes
 
 
 def _validated_references(references: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -358,6 +388,37 @@ class AgentClient:
         except Exception:
             return False
 
+    async def prefetch_references(self, *, suspect_url: str, suspect_html: str) -> None:
+        if not suspect_html or len(suspect_html.encode("utf-8", errors="replace")) > MAX_SUSPECT_HTML_BYTES:
+            return
+        try:
+            await asyncio.wait_for(self._http().post(
+                "/api/v1/references/prefetch",
+                json={"suspect_url": suspect_url, "input_mode": "provided_html", "suspect_html": suspect_html},
+            ), timeout=min(self.request_timeout_s, 1.0))
+        except Exception:
+            # The normal review still retrieves references if prefetch is unavailable.
+            return
+
+    async def retrieve_references(
+        self, *, suspect_url: str, suspect_html: str,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        if not suspect_html or len(suspect_html.encode("utf-8", errors="replace")) > MAX_SUSPECT_HTML_BYTES:
+            raise AgentServiceError("agent_suspect_html_unavailable")
+        response = await self._http().post(
+            "/api/v1/references/retrieve",
+            json={"suspect_url": suspect_url, "input_mode": "provided_html", "suspect_html": suspect_html},
+        )
+        self._check_response_size(response)
+        if response.status_code != 200:
+            raise AgentServiceError(f"reference_retrieval_http_{response.status_code}")
+        result = self._json_object(response)
+        references = result.get("references")
+        matches = result.get("reference_matches")
+        if not isinstance(references, list) or not isinstance(matches, list):
+            raise AgentServiceError("reference_retrieval_invalid_response")
+        return _validated_references(references), _bounded_reference_matches(matches)
+
     async def review(
         self,
         *,
@@ -365,6 +426,7 @@ class AgentClient:
         suspect_html: str,
         upstream: Mapping[str, Any],
         references: Sequence[Mapping[str, Any]] = (),
+        automatic_references: bool = True,
     ) -> AgentReview:
         if not self.base_url:
             raise AgentServiceError("agent_service_not_configured")
@@ -390,6 +452,8 @@ class AgentClient:
             },
             "references": _validated_references(references),
         }
+        if not automatic_references:
+            payload["automatic_references"] = False
         accepted = await self._http().post("/api/v1/analyses", json=payload)
         self._check_response_size(accepted)
         if accepted.status_code != 202:
@@ -477,4 +541,6 @@ class AgentClient:
                 else 0
             ),
             reference_matches=_bounded_reference_matches(result.get("reference_matches", []), limit=5),
+            timings_ms=_review_timings(result.get("timings_ms")),
+            review_passes=_review_passes(result.get("review_passes")),
         )

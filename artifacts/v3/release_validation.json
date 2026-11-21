@@ -13,9 +13,9 @@
   "policy_production_ready": false,
   "tcn_input_contract": "normalized_hostname_only_v1",
   "tcn_input_contract_matches": true,
-  "tcn_path": "artifacts\\v3\\url_tcn.onnx",
+  "tcn_path": "artifacts/v3/url_tcn.onnx",
   "tcn_probes": {
-    "known_legitimate": 0.22603890850840047,
+    "known_legitimate": 0.2260388667981885,
     "obvious_lookalike": 0.9999999973503604
   }
 }

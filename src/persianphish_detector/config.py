@@ -37,6 +37,7 @@ class DetectorConfig:
     agent_api_key: str = ""
     agent_timeout_s: float = 60.0
     agent_poll_interval_s: float = 0.25
+    agent_prefetch_references: bool = False
     api_key: str = ""
     use_browser: bool = True
     allow_private_network: bool = False
@@ -72,6 +73,7 @@ class DetectorConfig:
     jev_enabled: bool = False
     jev_base_url: str = ""
     jev_model: str = ""
+    jev_api_format: str = "chat_completions"
     jev_api_key: str = ""
     jev_timeout_s: float = 20.0
     jev_max_text_chars: int = 8000
@@ -84,6 +86,8 @@ class DetectorConfig:
     jev_local_auto_flag: bool = False
 
     def __post_init__(self) -> None:
+        if self.jev_api_format not in {"chat_completions", "decisions"}:
+            raise ValueError("invalid_jev_api_format")
         if bool(self.jev_base_url) != bool(self.jev_model.strip()):
             raise ValueError("jev_requires_base_url_and_model")
         if self.jev_enabled and not (self.jev_base_url or self.jev_local_model_path):
@@ -115,6 +119,7 @@ class DetectorConfig:
             agent_poll_interval_s=_env_float(
                 "PPD_AGENT_POLL_INTERVAL_S", 0.25, minimum=0.05, maximum=5.0
             ),
+            agent_prefetch_references=_env_bool("PPD_AGENT_PREFETCH_REFERENCES", False),
             api_key=os.getenv("PPD_API_KEY", ""),
             use_browser=_env_bool("PPD_USE_BROWSER", True),
             allow_private_network=_env_bool("PPD_ALLOW_PRIVATE_NETWORK", False),
@@ -135,6 +140,7 @@ class DetectorConfig:
             jev_enabled=_env_bool("PPD_JEV_ENABLED", False),
             jev_base_url=os.getenv("PPD_JEV_BASE_URL", "").rstrip("/"),
             jev_model=os.getenv("PPD_JEV_MODEL", "").strip(),
+            jev_api_format=os.getenv("PPD_JEV_API_FORMAT", "chat_completions").strip().lower(),
             jev_api_key=os.getenv("PPD_JEV_API_KEY", ""),
             jev_local_model_path=Path(local_jev_path) if local_jev_path else None,
             jev_local_auto_flag=_env_bool("PPD_JEV_LOCAL_AUTO_FLAG", False),

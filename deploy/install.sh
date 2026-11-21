@@ -91,7 +91,6 @@ set -euo pipefail
 {
 
 OWNER="${GITHUB_OWNER:-VibeATSCoder}"
-RAW="https://raw.githubusercontent.com/${OWNER}/phishing-detection-engine/main"
 # Re-running from inside an existing install should update it, not nest a
 # second one inside it. Someone who has installed once and comes back to pick up
 # a fix naturally runs the command from the directory they are already in, and
@@ -117,18 +116,19 @@ ARTEFACT_DIRS=()
 # Versions this stack releases as. deploy/COMPATIBILITY.json records the same
 # numbers and tests/test_release_contract.py asserts the two agree, so these
 # cannot drift from the contract unnoticed.
-DETECTOR_VERSION="${DETECTOR_VERSION:-3.8.3}"
-REVIEW_VERSION="${REVIEW_VERSION:-1.11.0}"
-RAG_VERSION="${RAG_VERSION:-2.1.0}"
+DETECTOR_VERSION="${DETECTOR_VERSION:-3.9.0}"
+REVIEW_VERSION="${REVIEW_VERSION:-1.12.0}"
+RAG_VERSION="${RAG_VERSION:-2.2.0}"
 # The reference *index* is data, versioned independently of the service image:
-# the 2.0.0 index works unchanged with the 2.1.0 service. It is published on the
+# the 2.0.0 index works unchanged with the 2.2.0 service. It is published on the
 # PUBLIC detector repo so it downloads with no token, unlike the private
 # reference-service repo that ships the image. Override with RAG_INDEX_VERSION /
 # RAG_INDEX_REPO / RAG_INDEX_TAG, or point ASSET_BASE_URL at a mirror.
 RAG_INDEX_VERSION="${RAG_INDEX_VERSION:-2.0.0}"
 RAG_INDEX_REPO="${RAG_INDEX_REPO:-phishing-detection-engine}"
 RAG_INDEX_TAG="${RAG_INDEX_TAG:-rag-index-${RAG_INDEX_VERSION}}"
-STACK_VERSION="${STACK_VERSION:-1.1.0}"
+STACK_VERSION="${STACK_VERSION:-1.2.0}"
+EXTENSION_VERSION="${EXTENSION_VERSION:-3.10.0}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -1121,6 +1121,15 @@ ensure_image() { # image  repo tag artefact
     || die "${artefact} loaded but did not provide ${image}"
 }
 
+stack_bundle="persianphish-stack-${STACK_VERSION}-deploy.tar.gz"
+extension_url="$(asset_url phishingshield-persian "v${EXTENSION_VERSION}" "phishingshield-persian-v${EXTENSION_VERSION}.zip")"
+stack_is_current() {
+  [ -f deploy/compose.images.yaml ] && [ -f deploy/compose.references.yaml ] \
+    && [ -f deploy/deploy.sh ] && [ -f deploy/stack.env.example ] \
+    && [ -f deploy/COMPATIBILITY.json ] \
+    && grep -Fq "\"stack_version\": \"${STACK_VERSION}\"" deploy/COMPATIBILITY.json
+}
+
 # In manual mode, show the whole list before asking for any of it. Being handed
 # one link at a time is the wrong shape for the situation manual mode exists for:
 # somebody moving files across from a browser can fetch them all at once, and
@@ -1130,7 +1139,14 @@ if [ "${SOURCE_MODE}" = "manual" ]; then
   say "These are the files this install needs. Download them in your browser"
   say "into  $(pwd)  and they will be picked up as you go."
   say ""
+  say "  browser extension ZIP (download to the browser computer):"
+  say "  ${extension_url}"
+  say ""
   needed=0
+  if ! stack_is_current && [ ! -f "${stack_bundle}" ]; then
+    say "  $(asset_url phishing-detection-engine "v${DETECTOR_VERSION}" "${stack_bundle}")"
+    needed=$((needed + 1))
+  fi
   if ! docker image inspect "phishing-detection-engine:${DETECTOR_VERSION}" >/dev/null 2>&1 \
      && [ ! -f "phishing-detection-engine-${DETECTOR_VERSION}.tar.gz" ]; then
     say "  $(asset_url phishing-detection-engine "v${DETECTOR_VERSION}" \
@@ -1150,6 +1166,8 @@ if [ "${SOURCE_MODE}" = "manual" ]; then
     # count that changes between index sizes.
     say "  the reference image parts and checksum, from the release page:"
     say "  https://github.com/${OWNER}/phishing-rag-service/releases/tag/v${RAG_VERSION}"
+    say "  $(asset_url phishing-rag-service "v${RAG_VERSION}" "phishing-rag-service-${RAG_VERSION}.tar.gz.parts.sha256")"
+    say "  $(asset_url phishing-rag-service "v${RAG_VERSION}" load_release.sh)"
     needed=$((needed + 1))
   fi
   if [ "${FETCH_INDEX:-0}" -eq 1 ]; then
@@ -1159,6 +1177,7 @@ if [ "${SOURCE_MODE}" = "manual" ]; then
     # still asked for in turn by fetch_index below, exactly like the images.
     say "  the reference index parts and checksum, from the release page:"
     say "  https://github.com/${OWNER}/${RAG_INDEX_REPO}/releases/tag/${RAG_INDEX_TAG}"
+    say "  $(asset_url "${RAG_INDEX_REPO}" "${RAG_INDEX_TAG}" "embedding-index-${RAG_INDEX_VERSION}.tar.gz.parts.sha256")"
     needed=$((needed + 1))
   fi
   if [ "${needed}" -eq 0 ]; then
@@ -1256,34 +1275,18 @@ if [ "${WITH_REFERENCES}" -eq 1 ]; then
 fi
 
 step "compose files and scripts"
-if [ ! -f deploy/compose.images.yaml ]; then
-  fetch_asset phishing-detection-engine "v${DETECTOR_VERSION}" \
-    "persianphish-stack-${STACK_VERSION}-deploy.tar.gz"
-  tar -xzf "persianphish-stack-${STACK_VERSION}-deploy.tar.gz" --strip-components=1 \
+if ! stack_is_current; then
+  fetch_asset phishing-detection-engine "v${DETECTOR_VERSION}" "${stack_bundle}"
+  tar -xzf "${stack_bundle}" --strip-components=1 \
     || die "could not unpack the stack bundle"
 fi
-mkdir -p deploy
-# Always take these from main: a fix landed after the release still reaches the
-# operator, and the bundle's copies are only a fallback for an offline install.
-for f in deploy/deploy.sh deploy/compose.images.yaml deploy/compose.references.yaml; do
-  if curl -fsSL --connect-timeout 10 --max-time 30 --retry 2 --retry-all-errors \
-       -o "${f}.new" "${RAW}/${f}" 2>/dev/null; then
-    mv "${f}.new" "${f}"
-  else
-    rm -f "${f}.new"
-  fi
-done
-[ -f deploy/deploy.sh ] || die "deploy/deploy.sh is missing and could not be fetched"
-[ -f deploy/compose.images.yaml ] || die "deploy/compose.images.yaml is missing"
+stack_is_current || die "the deployment bundle does not match stack ${STACK_VERSION}"
 chmod +x deploy/deploy.sh
 
 
 step "configuration"
 if [ ! -f deploy/.env ]; then
-  curl -fsSL --connect-timeout 10 --max-time 30 --retry 2 \
-       -o deploy/.env "${RAW}/deploy/stack.env.example" 2>/dev/null \
-    || cp .env.example deploy/.env 2>/dev/null \
-    || die "no configuration template available"
+  cp deploy/stack.env.example deploy/.env || die "no configuration template available"
   echo "  wrote deploy/.env"
 else
   echo "  keeping the existing deploy/.env"
@@ -1356,6 +1359,39 @@ if [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ]; then
     api_key=""; existing_key=""
   done
   [ -n "${api_key:-}" ] && set_env OPENROUTER_API_KEY "${api_key}"
+
+  # The extension's explicit Decision model stage works with a configured
+  # endpoint even when screening remains disabled on the default pipeline.
+  say ""
+  current_decision_base="$(env_value PPD_JEV_BASE_URL)"
+  if [ -n "${current_decision_base}" ]; then
+    decision_prompt="  change the configured decision provider? [y/N]: "
+  else
+    decision_prompt="  configure an endpoint for the Decision model stage? [y/N]: "
+  fi
+  case "$(ask "${decision_prompt}" n)" in
+    y|Y|yes|YES)
+      current_decision_base="${current_decision_base:-https://api.avalai.ir/v1}"
+      decision_base="$(ask "  decision base URL [${current_decision_base}]: " "${current_decision_base}")"
+      case "${decision_base}" in
+        *avalai.ir*) default_format=decisions ;;
+        *) default_format=chat_completions ;;
+      esac
+      decision_format="$(ask "  API format (decisions or chat_completions) [${default_format}]: " "${default_format}")"
+      case "${decision_format}" in
+        decisions|chat_completions) ;;
+        *) die "unsupported decision API format" ;;
+      esac
+      current_decision_model="$(env_value PPD_JEV_MODEL)"
+      current_decision_model="${current_decision_model:-jev-latest}"
+      decision_model="$(ask "  decision model [${current_decision_model}]: " "${current_decision_model}")"
+      decision_key="$(ask_secret '  decision API key (leave empty to keep the existing value): ')" || decision_key=""
+      set_env PPD_JEV_BASE_URL "${decision_base}"
+      set_env PPD_JEV_API_FORMAT "${decision_format}"
+      set_env PPD_JEV_MODEL "${decision_model}"
+      [ -z "${decision_key}" ] || set_env PPD_JEV_API_KEY "${decision_key}"
+      ;;
+  esac
 
   # --- internal shared secret ----------------------------------------------
   existing_review="$(env_value INTERNAL_REVIEW_API_KEY)"
@@ -1566,6 +1602,13 @@ if [ "${DOCKER_NEEDS_SUDO}" -eq 1 ]; then
     run_cmd="${SUDO} bash -c \"${run_cmd}\""
   fi
 fi
+
+say ""
+say "Browser extension v${EXTENSION_VERSION}:"
+say "  ${extension_url}"
+say "Unzip on your browser computer, open chrome://extensions, enable Developer mode,"
+say "and choose Load unpacked. In Extension options, enable backend review, enter"
+say "your detector origin, and select Customize backend stages."
 
 if [ -n "${missing}" ] || [ "${DOWNLOAD_ONLY}" -eq 1 ]; then
   echo

@@ -20,8 +20,8 @@ services:
   rag:
     # Overridable, so this matches whatever image you actually loaded rather
     # than forcing a specific one:
-    #   RAG_VERSION=2.1.0 docker compose ... up -d
-    image: phishing-rag-service:${RAG_VERSION:-2.1.0}
+    #   RAG_VERSION=2.2.0 docker compose ... up -d
+    image: phishing-rag-service:${RAG_VERSION:-2.2.0}
     # Never reach for a registry: this image is not published to one, so a
     # missing tag otherwise fails with "pull access denied", which reads like an
     # authentication problem rather than "you have not loaded that version".
@@ -36,6 +36,9 @@ services:
       RAG_CACHE_DIR: /data/index/_fast
       RAG_API_KEY: ${RAG_API_KEY:-}
       RAG_DEVICE: cpu
+      # Size the encoder's thread pool to the default two-CPU allocation.
+      OMP_NUM_THREADS: ${RAG_CPU_THREADS:-2}
+      MKL_NUM_THREADS: ${RAG_CPU_THREADS:-2}
       RAG_DEFAULT_TOP_K: ${RAG_TOP_K:-3}
       # Embedding backend. "local" (default) loads bge-m3 in-process (~2.8 GB).
       # "api" delegates query embedding to an OpenAI-compatible endpoint: drops

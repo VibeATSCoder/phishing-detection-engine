@@ -104,7 +104,11 @@ class ONNXTCNPredictor:
     def __init__(self, path: Path) -> None:
         import onnxruntime as ort
 
-        self.session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+        options = ort.SessionOptions()
+        # Each request scores one short hostname. Keep one inference from
+        # occupying the CPU pool shared with the crawler and RF.
+        options.intra_op_num_threads = 1
+        self.session = ort.InferenceSession(str(path), sess_options=options, providers=["CPUExecutionProvider"])
         input_shape = self.session.get_inputs()[0].shape
         if len(input_shape) != 2 or input_shape[1] != MAX_URL_BYTES:
             raise ValueError(

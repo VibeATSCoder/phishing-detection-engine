@@ -26,14 +26,14 @@ def test_health_exposes_service_version(tmp_path: Path):
     with TestClient(create_app(config(tmp_path))) as client:
         response = client.get("/health")
     assert response.status_code == 200
-    assert response.json()["service_version"] == __version__ == "3.8.3"
+    assert response.json()["service_version"] == __version__
 
 
 def test_ready_exposes_version_without_claiming_missing_models_are_ready(tmp_path: Path):
     with TestClient(create_app(config(tmp_path))) as client:
         response = client.get("/ready")
     assert response.status_code == 503
-    assert response.json()["service_version"] == "3.8.3"
+    assert response.json()["service_version"] == __version__
     assert response.json()["ready"] is False
 
 
@@ -116,3 +116,21 @@ def test_request_can_run_screener_before_review_without_fast_models(tmp_path: Pa
         request["browser_evidence"]["http_status"] = 403
         response = client.post("/v1/detect", json=request)
         assert response.json()["verdict"] == "crawl_failed" and calls == []
+
+
+def test_explicit_pipeline_capabilities_and_input_validation(tmp_path: Path):
+    from dataclasses import replace
+
+    settings = replace(config(tmp_path), api_key="test-key")
+    with TestClient(create_app(settings)) as client:
+        assert client.get("/v1/pipeline").status_code == 401
+        headers = {"X-API-Key": "test-key"}
+        stages = client.get("/v1/pipeline", headers=headers)
+        assert stages.status_code == 200
+        assert stages.json()["stages"] == ["rf", "decision", "rag", "agent"]
+        for controls in (
+            {"pipeline": []}, {"pipeline": ["rf", "rf"]}, {"pipeline": ["unknown"]},
+            {"pipeline": ["agent"], "use_rf": True},
+        ):
+            response = client.post("/v1/detect", headers=headers, json={"url": "https://example.com/", **controls})
+            assert response.status_code == 422
