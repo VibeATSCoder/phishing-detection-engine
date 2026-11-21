@@ -1,6 +1,6 @@
 # Minimal integrated deployment
 
-Stack 1.2.2 uses detector v3.9.2, reviewer v1.12.0, extension v3.10.0, and optional RAG v2.2.0. The component contract is recorded in [COMPATIBILITY.json](COMPATIBILITY.json).
+Stack 1.2.3 uses detector v3.9.3, reviewer v1.12.0, extension v3.11.0, and optional RAG v2.2.0. The component contract is recorded in [COMPATIBILITY.json](COMPATIBILITY.json).
 
 This bundle runs two services:
 
@@ -21,7 +21,7 @@ No checkout, no build, no `gh`. This downloads every release artefact, loads
 each image, writes one aggregated `.env`, and starts the stack:
 
 ```bash
-curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/installer-v1.2.2/install.sh | bash
+curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.3/install.sh | bash
 ```
 
 It stops and tells you what to fill in the first time, because
@@ -44,7 +44,7 @@ Run these commands from the directory containing `deploy/.env`. Use
 
 ```bash
 curl -fL --progress-bar --connect-timeout 120 --max-time 86400 \
-  -o install.sh https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/installer-v1.2.2/install.sh
+  -o install.sh https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.3/install.sh
 bash install.sh --upgrade --ask-token --full
 ```
 
@@ -71,7 +71,7 @@ stack bundle from the two releases into one directory, unpack the bundle, and
 run the script:
 
 ```bash
-tar -xzf persianphish-stack-1.2.2-deploy.tar.gz     # compose files and this guide
+tar -xzf persianphish-stack-1.2.3-deploy.tar.gz     # compose files and this guide
 cp deploy/stack.env.example deploy/.env             # then set the two keys
 bash deploy/deploy.sh
 ```
@@ -324,7 +324,7 @@ being down degrades reviews to the same behaviour as not running it at all.
 
 ## Manual installation and extension testing
 
-Download [install.sh](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/installer-v1.2.2/install.sh)
+Download [install.sh](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.3/install.sh)
 into your installation directory. Run it in a terminal so it can show the
 release links and check for local files.
 
@@ -336,12 +336,12 @@ Use these release assets if you are downloading on a separate computer.
 
 | Component | Assets |
 | --- | --- |
-| Detector | [Docker image and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/v3.9.2) |
-| Stack | [Deployment bundle](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/installer-v1.2.2/persianphish-stack-1.2.2-deploy.tar.gz) |
+| Detector | [Docker image and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/v3.9.3) |
+| Stack | [Deployment bundle](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.3/persianphish-stack-1.2.3-deploy.tar.gz) |
 | Reviewer | [Docker image and checksum](https://github.com/VibeATSCoder/agentic-phishing-review/releases/tag/v1.12.0) |
 | RAG | [Image parts, checksums, and loader](https://github.com/VibeATSCoder/phishing-rag-service/releases/tag/v2.2.0) |
 | Reference index | [Index parts and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/rag-index-2.0.0) |
-| Browser extension | [Chrome/Edge ZIP](https://github.com/VibeATSCoder/phishingshield-persian/releases/download/v3.10.0/phishingshield-persian-v3.10.0.zip) |
+| Browser extension | [Chrome/Edge ZIP](https://github.com/VibeATSCoder/phishingshield-persian/releases/download/v3.11.0/phishingshield-persian-v3.11.0.zip) |
 
 The installer prompts for the reviewer provider and offers a separate Decision
 model endpoint. For AvalAI Jev use base URL `https://api.avalai.ir/v1`, format
@@ -374,3 +374,9 @@ API clients can send the same order directly.
 ```json
 {"url":"https://example.com/","pipeline":["rf","decision","rag","agent"]}
 ```
+
+The extension requests live stage updates through
+`Accept: application/x-ndjson` on `POST /v1/detect`. The stream carries stage
+names and statuses, followed by the same result available as regular JSON.
+Clients requesting JSON still receive one response. The extension displays a
+short quiz and waiting message with older servers while it awaits the result.

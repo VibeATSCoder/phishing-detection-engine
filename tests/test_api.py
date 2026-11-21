@@ -1,6 +1,7 @@
 import json
 from dataclasses import replace
 from pathlib import Path
+import json
 
 import httpx
 from fastapi.testclient import TestClient
@@ -134,3 +135,32 @@ def test_explicit_pipeline_capabilities_and_input_validation(tmp_path: Path):
         ):
             response = client.post("/v1/detect", headers=headers, json={"url": "https://example.com/", **controls})
             assert response.status_code == 422
+
+
+def test_detect_streams_progress_and_preserves_json_response(tmp_path: Path):
+    from types import SimpleNamespace
+
+    with TestClient(create_app(config(tmp_path))) as client:
+        calls = []
+        expected = {"verdict": "legitimate"}
+
+        async def detect(*args, **options):
+            calls.append(options["pipeline"])
+            emit = options.get("on_progress")
+            if emit:
+                emit({"type": "stage", "stage": "rf", "status": "completed", "verdict": "suspicious"})
+                emit({"type": "stage", "stage": "decision", "status": "started"})
+            return SimpleNamespace(to_dict=lambda: expected)
+
+        client.app.state.detector.detect = detect
+        payload = {"url": "https://example.com/", "pipeline": ["rf", "decision"]}
+        assert client.post("/v1/detect", json=payload).json() == expected
+        with client.stream("POST", "/v1/detect", json=payload, headers={"Accept": "application/x-ndjson"}) as response:
+            assert response.headers["content-type"] == "application/x-ndjson"
+            assert response.headers["cache-control"] == "no-store"
+            assert [json.loads(line) for line in response.iter_lines()] == [
+                {"type": "stage", "stage": "rf", "status": "completed", "verdict": "suspicious"},
+                {"type": "stage", "stage": "decision", "status": "started"},
+                {"type": "result", "result": expected},
+            ]
+        assert calls == [payload["pipeline"], payload["pipeline"]]

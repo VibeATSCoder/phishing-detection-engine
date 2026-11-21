@@ -8,7 +8,7 @@ import uuid
 from dataclasses import asdict, replace
 from pathlib import Path
 from urllib.parse import urlsplit
-from typing import Any, Dict, Literal, Mapping, Optional, Sequence, Tuple, get_args
+from typing import Any, Callable, Dict, Literal, Mapping, Optional, Sequence, Tuple, get_args
 
 from .allowlist import CATALOG_VERSION, allowlisted_domain
 from .agent import AgentClient, AgentReview, AgentServiceError
@@ -103,6 +103,17 @@ from .url_utils import UnsafeURL, canonical_url, resolve_public_addresses
 
 PipelineStage = Literal["rf", "decision", "rag", "agent"]
 PIPELINE_STAGES = get_args(PipelineStage)
+ProgressCallback = Callable[[dict[str, str]], None]
+
+
+def _progress(
+    callback: ProgressCallback | None, stage: str, status: str, verdict: Verdict | None = None,
+) -> None:
+    if callback is not None:
+        event = {"type": "stage", "stage": stage, "status": status}
+        if verdict is not None:
+            event["verdict"] = verdict.value
+        callback(event)
 
 
 class Detector:
@@ -190,10 +201,11 @@ class Detector:
         *,
         use_rf: bool | None = None,
         pipeline: Sequence[PipelineStage] | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> DetectionResult:
         """Trace-wrapped entry point; the pipeline itself lives in ``_detect``."""
         with span("detector.detect", **url_labels(url)):
-            return await self._detect(url, browser_evidence, agent_references, use_jev, use_rf, pipeline)
+            return await self._detect(url, browser_evidence, agent_references, use_jev, use_rf, pipeline, on_progress)
 
     async def _detect(
         self,
@@ -203,6 +215,7 @@ class Detector:
         use_jev: bool | None = None,
         use_rf: bool | None = None,
         pipeline: Sequence[PipelineStage] | None = None,
+        on_progress: ProgressCallback | None = None,
     ) -> DetectionResult:
         started = time.perf_counter()
         request_id = uuid.uuid4().hex
@@ -260,6 +273,7 @@ class Detector:
                 evidence_items=derive_evidence(intel_match=intel_match),
             )
 
+        _progress(on_progress, "crawl", "started")
         crawl_started = time.perf_counter()
         if browser_evidence:
             try:
@@ -313,13 +327,17 @@ class Detector:
         latency["crawl"] = sum(latency.values())
 
         if not evidence.usable:
+            _progress(on_progress, "crawl", "unavailable")
             return self._failed_crawl(
                 request_id, normalized, evidence, run_fast and pipeline is None, started, latency,
                 pipeline=pipeline,
             )
+        _progress(on_progress, "crawl", "completed")
         if pipeline is not None:
-            return await self._ordered_pipeline(request_id, normalized, evidence, pipeline, started, latency)
+            return await self._ordered_pipeline(request_id, normalized, evidence, pipeline, started, latency, on_progress)
 
+        if run_fast and self.artifact is not None:
+            _progress(on_progress, "rf", "started")
         facts_started = time.perf_counter()
         facts = await collect_domain_facts(evidence.final_url or normalized, self.config.allow_private_network)
         latency["domain_facts"] = (time.perf_counter() - facts_started) * 1000
@@ -357,6 +375,8 @@ class Detector:
                 reasons.append("browser_rendered_recheck")
 
         fast_verdict = verdict.value if run_fast and self.artifact is not None else None
+        if fast_verdict is not None:
+            _progress(on_progress, "rf", "completed", verdict)
         combined = scores["combined"]
         enamad_audit: dict[str, Any] | None = None
         if self.config.enamad_verify and evidence.usable:
@@ -395,6 +415,8 @@ class Detector:
         jev_audit: dict[str, Any] | None = None
         local_jev_audit: dict[str, Any] | None = None
         jev_ms = 0.0
+        if run_jev and verdict != Verdict.PHISHING:
+            _progress(on_progress, "decision", "started")
         if run_jev and self.jev_local and verdict != Verdict.PHISHING:
             local_started = time.perf_counter()
             try:
@@ -449,11 +471,15 @@ class Detector:
             )
             reasons.extend(jev_reasons)
             jev_audit = finding.audit_summary()
+        decision_audit = jev_audit or local_jev_audit
+        if decision_audit is not None:
+            _progress(on_progress, "decision", decision_audit["status"], verdict)
 
         agent_invoked = False
         agent_audit: dict[str, Any] | None = None
         agent_evidence_codes: list[str] = []
         if verdict == Verdict.SUSPICIOUS and self.agent:
+            _progress(on_progress, "agent", "started")
             agent_invoked = True
             agent_started = time.perf_counter()
             try:
@@ -496,6 +522,7 @@ class Detector:
                 verdict = Verdict.SUSPICIOUS
             agent_ms = (time.perf_counter() - agent_started) * 1000
             METRICS.agent_duration.observe(agent_ms / 1000.0)
+            _progress(on_progress, "agent", "completed" if agent_audit["status"] == "completed" else "unavailable", verdict)
         else:
             agent_ms = 0.0
 
@@ -539,6 +566,7 @@ class Detector:
     async def _ordered_pipeline(
         self, request_id: str, url: str, evidence: CrawlEvidence,
         pipeline: Sequence[PipelineStage], started: float, latency: dict[str, float],
+        on_progress: ProgressCallback | None = None,
     ) -> DetectionResult:
         final_url = evidence.final_url or url
         verdict = Verdict.SUSPICIOUS
@@ -560,6 +588,7 @@ class Detector:
                 continue
             step: dict[str, Any] = {"stage": stage, "status": "completed"}
             steps.append(step)
+            _progress(on_progress, stage, "started")
             stage_started = time.perf_counter()
             try:
                 if stage == "rf":
@@ -624,6 +653,7 @@ class Detector:
             duration = (time.perf_counter() - stage_started) * 1000
             latency[stage] = duration
             step.update(verdict=verdict.value, latency_ms=round(duration, 3))
+            _progress(on_progress, stage, step["status"], verdict)
             if verdict != Verdict.SUSPICIOUS:
                 decisive_stage = stage
 

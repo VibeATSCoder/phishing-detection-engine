@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One command to fetch, load and start the whole stack.
 #
-#   curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/installer-v1.2.2/install.sh | bash
+#   curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.3/install.sh | bash
 #
 # or, having downloaded it:
 #
@@ -127,7 +127,7 @@ ARTEFACT_DIRS=()
 # Versions this stack releases as. deploy/COMPATIBILITY.json records the same
 # numbers and tests/test_release_contract.py asserts the two agree, so these
 # cannot drift from the contract unnoticed.
-DETECTOR_VERSION="${DETECTOR_VERSION:-3.9.2}"
+DETECTOR_VERSION="${DETECTOR_VERSION:-3.9.3}"
 REVIEW_VERSION="${REVIEW_VERSION:-1.12.0}"
 RAG_VERSION="${RAG_VERSION:-2.2.0}"
 # The reference *index* is data, versioned independently of the service image:
@@ -138,9 +138,9 @@ RAG_VERSION="${RAG_VERSION:-2.2.0}"
 RAG_INDEX_VERSION="${RAG_INDEX_VERSION:-2.0.0}"
 RAG_INDEX_REPO="${RAG_INDEX_REPO:-phishing-detection-engine}"
 RAG_INDEX_TAG="${RAG_INDEX_TAG:-rag-index-${RAG_INDEX_VERSION}}"
-STACK_VERSION="${STACK_VERSION:-1.2.2}"
-STACK_TAG="${STACK_TAG:-installer-v${STACK_VERSION}}"
-EXTENSION_VERSION="${EXTENSION_VERSION:-3.10.0}"
+STACK_VERSION="${STACK_VERSION:-1.2.3}"
+STACK_TAG="${STACK_TAG:-v${DETECTOR_VERSION}}"
+EXTENSION_VERSION="${EXTENSION_VERSION:-3.11.0}"
 
 while [ $# -gt 0 ]; do
   case "$1" in

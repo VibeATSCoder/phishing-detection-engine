@@ -708,10 +708,18 @@ async def test_explicit_pipeline_runs_selected_stages_in_order(monkeypatch, tmp_
     monkeypatch.setattr(orchestrator_module, "collect_domain_facts", AsyncMock(return_value=DomainFacts()))
     monkeypatch.setattr(orchestrator_module, "extract_features", lambda *_: base_features())
 
-    result = await detector.detect("https://suspect.example/", pipeline=stages)
+    progress = []
+    result = await detector.detect("https://suspect.example/", pipeline=stages, on_progress=progress.append)
     assert result.verdict == Verdict.SUSPICIOUS
     assert calls == list(stages)
     assert [step["status"] for step in result.evidence_summary["pipeline"]] == ["completed"] * len(stages)
+    assert progress[:2] == [
+        {"type": "stage", "stage": "crawl", "status": "started"},
+        {"type": "stage", "stage": "crawl", "status": "completed"},
+    ]
+    assert [(event["stage"], event["status"]) for event in progress[2:]] == [
+        (stage, phase) for stage in stages for phase in ("started", "completed")
+    ]
     assert "<html" not in json.dumps(result.to_dict()).lower()
 
 

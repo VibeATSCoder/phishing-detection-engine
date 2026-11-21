@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import hmac
 import hashlib
 from contextlib import asynccontextmanager
@@ -8,7 +10,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -24,6 +26,8 @@ from .orchestrator import Detector, PIPELINE_STAGES, PipelineStage
 from .url_utils import canonical_url
 
 
+LOGGER = logging.getLogger(__name__)
+DETECT_STREAM = "application/x-ndjson"
 MAX_REQUEST_BODY_BYTES = 14_000_000
 
 # Declared purely so the OpenAPI schema advertises the key and the Swagger
@@ -223,17 +227,55 @@ def create_app(config: DetectorConfig | None = None) -> FastAPI:
             },
         }
 
-    @app.post("/v1/detect", dependencies=[Depends(api_key_scheme)])
-    async def detect(payload: DetectRequest, request: Request) -> Dict[str, Any]:
+    @app.post(
+        "/v1/detect", dependencies=[Depends(api_key_scheme)], response_model=dict[str, Any],
+        responses={200: {"content": {DETECT_STREAM: {}}}},
+    )
+    async def detect(payload: DetectRequest, request: Request) -> Dict[str, Any] | StreamingResponse:
         detector: Detector = request.app.state.detector
         browser_payload = payload.browser_evidence.model_dump() if payload.browser_evidence else None
         agent_references = [item.model_dump(mode="json") for item in payload.agent_references]
-        result = await detector.detect(
-            payload.url, browser_payload, agent_references,
-            use_jev=payload.use_jev, use_rf=payload.use_rf,
-            **({"pipeline": payload.pipeline} if payload.pipeline is not None else {}),
+        options: dict[str, Any] = {"use_jev": payload.use_jev, "use_rf": payload.use_rf}
+        if payload.pipeline is not None:
+            options["pipeline"] = payload.pipeline
+
+        async def run(**extra: Any) -> dict[str, Any]:
+            result = await detector.detect(payload.url, browser_payload, agent_references, **options, **extra)
+            return result.to_dict()
+
+        accepted_types = {part.split(";", 1)[0].strip().lower() for part in request.headers.get("accept", "").split(",")}
+        if DETECT_STREAM not in accepted_types:
+            return await run()
+
+        async def stream():
+            events: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+
+            async def detect_and_publish() -> None:
+                try:
+                    result = await run(on_progress=events.put_nowait)
+                    events.put_nowait({"type": "result", "result": result})
+                except Exception as exc:
+                    LOGGER.error("streamed detection failed: %s", type(exc).__name__)
+                    events.put_nowait({"type": "error"})
+
+            task = asyncio.create_task(detect_and_publish())
+            try:
+                while True:
+                    try:
+                        event = await asyncio.wait_for(events.get(), timeout=10)
+                    except TimeoutError:
+                        event = {"type": "heartbeat"}
+                    yield json.dumps(event, separators=(",", ":")) + "\n"
+                    if event["type"] in {"result", "error"}:
+                        return
+            finally:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
+        return StreamingResponse(
+            stream(), media_type=DETECT_STREAM,
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
         )
-        return result.to_dict()
 
     @app.get("/v1/detect/{request_id}", dependencies=[Depends(api_key_scheme)])
     async def get_result(request_id: str, request: Request) -> Dict[str, Any]:
