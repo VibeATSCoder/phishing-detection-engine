@@ -3,12 +3,14 @@
 import json
 import os
 import re
+import select
 import shutil
 import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
+import time
 
 import pytest
 
@@ -107,3 +109,129 @@ def test_private_release_resumes_partial_download(tmp_path):
         ("/repos/fixture/private/releases/tags/v1", f"Bearer {token}", None),
         ("/repos/fixture/private/releases/assets/17", f"Bearer {token}", f"bytes={partial_size}-"),
     ]
+
+
+@pytest.mark.skipif(sys.platform != "linux" or not shutil.which("setsid"), reason="requires a controlling terminal")
+@pytest.mark.parametrize("configure_only", [False, True])
+def test_existing_install_can_configure_apis_with_or_without_downloads(tmp_path, configure_only):
+    import errno
+    import pty
+    import termios
+
+    deploy = tmp_path / "deploy"
+    deploy.mkdir()
+    index = tmp_path / "Embedding_Index"
+    index.mkdir()
+    for name in ("page_index.parquet", "block_embeddings.npy"):
+        (index / name).touch()
+
+    settings = deploy / ".env"
+    settings.write_text(
+        "OPENROUTER_BASE_URL=https://agent.example/v1\nOPENROUTER_MODEL=old-agent\n"
+        "OPENROUTER_API_KEY=fixture-old-agent-key\nINTERNAL_REVIEW_API_KEY=fixture-internal-key\n"
+        "PPD_API_KEY=fixture-browser-key\nRAG_BASE_URL=http://rag:8092\n"
+        f"RAG_INDEX_HOST_PATH={index}\nRAG_EMBED_MODE=local\n"
+    )
+    (deploy / "deploy.sh").write_text('printf "%s\\n" "$@" > deployment.args\n')
+    source_deploy = INSTALLER.parent
+    for name in ("compose.images.yaml", "compose.references.yaml", "COMPATIBILITY.json", "stack.env.example"):
+        shutil.copyfile(source_deploy / name, deploy / name)
+
+    mock_bin = tmp_path / "bin"
+    mock_bin.mkdir()
+    commands = {
+        "curl": "touch unexpected-network-request; exit 22",
+        "docker": "exit 0",
+        "df": "printf 'Available\\n128G\\n'",
+    }
+    for command, body in commands.items():
+        tool = mock_bin / command
+        tool.write_text(f"#!/bin/sh\n{body}\n")
+        tool.chmod(0o755)
+
+    args = ["--configure-providers"] if configure_only else ["--upgrade", "--ask-token", "--full", "--download-only"]
+    prompts = [] if configure_only else [("GitHub token (input hidden): ", "fixture-github-token")]
+    prompts.extend([
+        ("Configure Decision model now? [Y/n]: ", ""),
+        ("Decision model API base URL [https://api.avalai.ir/v1]: ", ""),
+        ("Model ID [jev-latest]: ", ""),
+        ("Decision API format (decisions or chat_completions) [decisions]: ", ""),
+        ("Decision model API key (hidden): ", "fixture-decision-key"),
+        ("Change the existing Review agent settings? [y/N]: ", "y"),
+        ("Review agent API base URL [https://agent.example/v1]: ", "https://new-agent.example/v1"),
+        ("Model ID [old-agent]: ", "agent-model"),
+        ("Review agent API key (hidden): ", "fixture-agent-key"),
+        ("Test the agent key with a small completion now? [y/N]: ", ""),
+        ("Embedding mode (local or api) [local]: ", "api"),
+        ("Configure RAG embeddings now? [Y/n]: ", ""),
+        ("RAG embeddings API base URL [https://api.avalai.ir/v1]: ", "https://embeddings.example/v1"),
+        ("Model ID [bge-m3]: ", "provider-bge-m3"),
+        ("RAG embeddings API key (hidden): ", "fixture-rag-key"),
+    ])
+
+    terminal, slave = pty.openpty()
+    try:
+        process = subprocess.Popen(
+            ["setsid", "--ctty", "bash", str(INSTALLER), *args],
+            stdin=slave, stdout=slave, stderr=slave, cwd=tmp_path, env=os.environ | {
+            "PATH": f"{mock_bin}:{os.environ['PATH']}", "NO_PROMPT": "0",
+            },
+        )
+    finally:
+        os.close(slave)
+
+    output = bytearray()
+    try:
+        deadline = time.monotonic() + 20
+        cursor = 0
+        for prompt, answer in prompts:
+            needle = prompt.encode()
+            while output.find(needle, cursor) == -1:
+                readable, _, _ = select.select([terminal], [], [], max(0, deadline - time.monotonic()))
+                assert readable, output.decode(errors="replace")
+                output.extend(os.read(terminal, 4096))
+            cursor = output.index(needle, cursor) + len(needle)
+            if "API key" in prompt or "GitHub token" in prompt:
+                while termios.tcgetattr(terminal)[3] & termios.ECHO:
+                    assert time.monotonic() < deadline, output.decode(errors="replace")
+                    time.sleep(0.01)
+            os.write(terminal, answer.encode() + b"\n")
+        while True:
+            readable, _, _ = select.select([terminal], [], [], max(0, deadline - time.monotonic()))
+            assert readable, output.decode(errors="replace")
+            try:
+                chunk = os.read(terminal, 4096)
+            except OSError as error:
+                if error.errno != errno.EIO:
+                    raise
+                break
+            if not chunk:
+                break
+            output.extend(chunk)
+        assert process.wait(timeout=2) == 0, output.decode(errors="replace")
+    finally:
+        os.close(terminal)
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+
+    saved = dict(line.split("=", 1) for line in settings.read_text().splitlines())
+    assert saved["PPD_JEV_BASE_URL"] == "https://api.avalai.ir/v1"
+    assert saved["PPD_JEV_API_FORMAT"] == "decisions"
+    assert saved["PPD_JEV_MODEL"] == "jev-latest"
+    assert saved["PPD_JEV_API_KEY"] == "fixture-decision-key"
+    assert saved["OPENROUTER_BASE_URL"] == "https://new-agent.example/v1"
+    assert saved["OPENROUTER_MODEL"] == "agent-model"
+    assert saved["OPENROUTER_API_KEY"] == "fixture-agent-key"
+    assert saved["RAG_EMBED_MODE"] == "api"
+    assert saved["RAG_EMBED_API_BASE"] == "https://embeddings.example/v1"
+    assert saved["RAG_EMBED_MODEL"] == "provider-bge-m3"
+    assert saved["RAG_EMBED_API_KEY"] == "fixture-rag-key"
+    assert saved["INTERNAL_REVIEW_API_KEY"] == "fixture-internal-key"
+    assert saved["PPD_API_KEY"] == "fixture-browser-key"
+    for secret in (b"fixture-decision-key", b"fixture-agent-key", b"fixture-rag-key", b"fixture-github-token"):
+        assert secret not in output
+    assert "GITHUB_TOKEN" not in saved
+    assert not (tmp_path / "unexpected-network-request").exists()
+    if configure_only:
+        assert (tmp_path / "deployment.args").read_text().strip() == "--with-references"

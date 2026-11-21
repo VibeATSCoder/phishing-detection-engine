@@ -53,9 +53,11 @@ token needs access to the private reviewer and RAG repositories and
 **Contents: Read-only** permission. For automation, supply `GITHUB_TOKEN`
 through the environment and omit `--ask-token`. The `--token` option also works.
 
-The upgrade uses the existing provider settings and skips the setup questions.
-`--full` includes the reference service. An installation already using the
-internal RAG service keeps it enabled with `--upgrade` alone.
+An interactive upgrade offers to keep or edit the Decision model, review agent,
+and RAG embedding settings. The provider keys are separate from the GitHub token.
+Use `--no-prompt` to retain settings for unattended upgrades. `--full` includes
+the reference service. An installation already using the internal RAG service
+keeps it enabled with `--upgrade` alone.
 
 Downloads show progress and resume from partial files on a rerun. The default
 is 24 hours per asset transfer attempt, with retries and a 15-minute idle
@@ -63,6 +65,28 @@ limit. Set `--download-timeout SECONDS` to change the transfer timeout.
 Docker load displays its layer output. Service startup reports progress and
 allows 30 minutes per service by default. Set `--health-timeout SECONDS`
 to change the startup wait.
+
+### Configure provider APIs on the installed stack
+
+When the extension reports **Configure these stages on the detector first:
+Decision model**, download the current installer above, then run it from the
+directory containing `deploy/.env`.
+
+```bash
+bash install.sh --configure-providers --full
+```
+
+This uses the existing deployment files and local images. A GitHub token is
+unnecessary for this command. Provider URLs, model IDs, and keys are saved in
+`deploy/.env`. The installed deployment script then applies the settings.
+
+- **Decision model** asks for the base URL, model ID, API format and key.
+  AvalAI Jev uses `https://api.avalai.ir/v1`, `jev-latest`, and `decisions`.
+- **Review agent** asks for its own language model URL, model ID, and key.
+- **RAG embeddings** asks whether to use local BGE-M3 or an API. Select `api`
+  to enter the URL, key and model ID for a 1,024-dimensional BGE-M3 endpoint.
+
+Select **Test connection** in the extension after the stack starts.
 
 ## Start from released images by hand
 

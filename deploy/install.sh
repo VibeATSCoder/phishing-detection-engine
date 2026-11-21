@@ -8,7 +8,9 @@
 #   bash install.sh                      detector + reviewer
 #   bash install.sh --full               everything, including reference retrieval
 #   bash install.sh --with-references    same as --full
-#   bash install.sh --upgrade            reuse the existing directory and provider settings
+#   bash install.sh --upgrade            update the existing installation and prompt for provider settings
+#   bash install.sh --configure-providers
+#                                       set provider URLs, models and keys using the installed stack
 #   bash install.sh --upgrade --ask-token --full
 #                                       prompt privately for a GitHub token and update all services
 #   bash install.sh --download-timeout 86400
@@ -29,8 +31,7 @@
 # without asking, and nothing is installed at all without a terminal.
 #
 # With a terminal available it asks for what the services need and writes
-# deploy/.env for you: the model endpoint and key (checked against the provider
-# before it is accepted), a generated shared secret for the detector-to-reviewer
+# deploy/.env for you: provider URLs, models and keys, a generated shared secret for the detector-to-reviewer
 # call, an optional key on the detector itself, and an optional VirusTotal key
 # for the intelligence monitor. Nothing has to be edited by hand. Without a
 # terminal, or with --no-prompt, it writes the template and reports what is
@@ -112,6 +113,7 @@ REQUIRE_REFERENCES=0
 FETCH_INDEX=0
 DOWNLOAD_ONLY=0
 UPGRADE=0
+CONFIGURE_PROVIDERS=0
 ASK_GITHUB_TOKEN=0
 DOWNLOAD_TIMEOUT=86400
 HEALTH_TIMEOUT=1800
@@ -148,6 +150,7 @@ while [ $# -gt 0 ]; do
     --with-references|--full) WITH_REFERENCES=1; REQUIRE_REFERENCES=1; shift ;;
     --download-only) DOWNLOAD_ONLY=1; shift ;;
     --upgrade) UPGRADE=1; shift ;;
+    --configure-providers) CONFIGURE_PROVIDERS=1; shift ;;
     --ask-token) ASK_GITHUB_TOKEN=1; shift ;;
     --download-timeout) DOWNLOAD_TIMEOUT="${2:?--download-timeout needs seconds}"; shift 2 ;;
     --health-timeout) HEALTH_TIMEOUT="${2:?--health-timeout needs seconds}"; shift 2 ;;
@@ -171,7 +174,7 @@ step() { echo; echo "== $*"; }
 [[ "${DOWNLOAD_TIMEOUT}" =~ ^[1-9][0-9]{0,8}$ ]] || die "--download-timeout needs positive whole seconds"
 [[ "${HEALTH_TIMEOUT}" =~ ^[1-9][0-9]{0,8}$ ]] || die "--health-timeout needs positive whole seconds"
 
-if [ "${UPGRADE}" -eq 1 ]; then
+if [ "${UPGRADE}" -eq 1 ] || [ "${CONFIGURE_PROVIDERS}" -eq 1 ]; then
   [ -f "${INSTALL_DIR}/deploy/.env" ] \
     || die "no existing deploy/.env found. Run from the install directory or pass --dir PATH."
   if grep -Eq "^RAG_BASE_URL=['\"]?http://rag:8092/?['\"]?[[:space:]]*$" "${INSTALL_DIR}/deploy/.env"; then
@@ -193,6 +196,14 @@ HAVE_TTY=0
 if { exec 3<>/dev/tty; } 2>/dev/null; then
   HAVE_TTY=1
   exec 3>&-
+fi
+if [ "${CONFIGURE_PROVIDERS}" -eq 1 ]; then
+  [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ] \
+    || die "--configure-providers needs an interactive terminal"
+  [ "${UPGRADE}" -eq 0 ] && [ "${ASK_GITHUB_TOKEN}" -eq 0 ] && [ "${DOWNLOAD_ONLY}" -eq 0 ] \
+    || die "--configure-providers works on the installed stack. Run it without download or upgrade options."
+  [ -f "${INSTALL_DIR}/deploy/deploy.sh" ] && [ -f "${INSTALL_DIR}/deploy/compose.images.yaml" ] \
+    || die "the existing deployment scripts were not found"
 fi
 # Returns 1 when the terminal is at end of input. The caller has to act on
 # that: a prompt loop that treats EOF as an empty answer never terminates, it
@@ -282,16 +293,120 @@ env_value() { # key -> current value in deploy/.env
   sed -n "s/^$1=//p" "${2:-deploy/.env}" 2>/dev/null | tail -n 1
 }
 
-# Confirm the key and endpoint actually work before the install claims success.
-# A wrong key is otherwise discovered at the first detection, by which point the
-# operator has no reason to connect the two.
+# Optional completion check for the review agent's configured provider.
 check_openrouter() { # key base_url model -> 0 if a completion comes back
-  local key="$1" base="$2" model="$3" body
+  local key="$1" base="$2" model="$3" body payload
+  payload="$(python3 -c 'import json, sys; print(json.dumps({"model": sys.argv[1], "messages": [{"role": "user", "content": "ok"}], "max_tokens": 1}))' "${model}")"
   body="$(curl -s --max-time 30 "${base%/}/chat/completions" \
-      -H "Authorization: Bearer ${key}" -H "Content-Type: application/json" \
-      -d "{\"model\":\"${model}\",\"messages\":[{\"role\":\"user\",\"content\":\"ok\"}],\"max_tokens\":1}" \
+      --header @<(printf 'Authorization: Bearer %s\n' "${key}") -H "Content-Type: application/json" \
+      -d "${payload}" \
     2>/dev/null)" || return 1
   printf '%s' "${body}" | grep -q '"choices"'
+}
+
+configure_api() { # decision | agent | embeddings
+  local kind="$1" label base_key model_key secret_key default_base default_model
+  local old_base old_model old_key base model key format default_format reply
+  case "${kind}" in
+    decision)
+      label="Decision model"; base_key=PPD_JEV_BASE_URL; model_key=PPD_JEV_MODEL; secret_key=PPD_JEV_API_KEY
+      default_base="https://api.avalai.ir/v1"; default_model="jev-latest" ;;
+    agent)
+      label="Review agent"; base_key=OPENROUTER_BASE_URL; model_key=OPENROUTER_MODEL; secret_key=OPENROUTER_API_KEY
+      default_base="https://openrouter.ai/api/v1"; default_model="google/gemma-4-31b-it" ;;
+    embeddings)
+      label="RAG embeddings"; base_key=RAG_EMBED_API_BASE; model_key=RAG_EMBED_MODEL; secret_key=RAG_EMBED_API_KEY
+      default_base="https://api.avalai.ir/v1"; default_model="bge-m3" ;;
+  esac
+  old_base="$(env_value "${base_key}")"
+  old_model="$(env_value "${model_key}")"
+  old_key="$(env_value "${secret_key}")"
+  say ""
+  say "${label} provider"
+  if [[ -n "${old_base}" && -n "${old_model}" && ( "${kind}" != "agent" || -n "${old_key}" ) ]] \
+      || [[ "${kind}" == "decision" && -n "$(env_value PPD_JEV_LOCAL_MODEL_PATH)" ]]; then
+    reply="$(ask "  Change the existing ${label} settings? [y/N]: " n)" || die "provider setup interrupted"
+  else
+    reply="$(ask "  Configure ${label} now? [Y/n]: " y)" || die "provider setup interrupted"
+  fi
+  case "${reply}" in y|Y|yes|YES) ;; *) return 0 ;; esac
+
+  base="$(ask "  ${label} API base URL [${old_base:-${default_base}}]: " "${old_base:-${default_base}}")" \
+    || die "provider setup interrupted"
+  python3 -c 'import sys; from urllib.parse import urlsplit
+url = urlsplit(sys.argv[1])
+if url.scheme not in ("http", "https") or not url.hostname or url.username is not None or url.query or url.fragment or any(c.isspace() for c in sys.argv[1]):
+    raise SystemExit(1)
+url.port' "${base}" 2>/dev/null || die "${label} needs an HTTP(S) base URL without credentials, queries, or fragments"
+  model="$(ask "  Model ID [${old_model:-${default_model}}]: " "${old_model:-${default_model}}")" \
+    || die "provider setup interrupted"
+  [[ -n "${model//[[:space:]]/}" ]] || die "${label} needs a model name"
+
+  if [ "${kind}" = "decision" ]; then
+    default_format=chat_completions
+    case "${base}" in https://api.avalai.ir|https://api.avalai.ir/*) default_format=decisions ;; esac
+    if [ "${base%/}" = "${old_base%/}" ]; then
+      format="$(env_value PPD_JEV_API_FORMAT)"
+      default_format="${format:-${default_format}}"
+    fi
+    format="$(ask "  Decision API format (decisions or chat_completions) [${default_format}]: " "${default_format}")" \
+      || die "provider setup interrupted"
+    case "${format}" in decisions|chat_completions) ;; *) die "unsupported Decision API format" ;; esac
+  fi
+
+  if [[ "${base%/}" = "${old_base%/}" && -n "${old_key}" ]]; then
+    key="$(ask_secret "  ${label} API key (Enter keeps the current key): ")" || die "provider setup interrupted"
+    key="${key:-${old_key}}"
+  else
+    key="$(ask_secret "  ${label} API key (hidden): ")" || die "provider setup interrupted"
+  fi
+  if [ "${kind}" = "agent" ]; then
+    [ -n "${key}" ] || die "the review agent needs an API key"
+    reply="$(ask '  Test the agent key with a small completion now? [y/N]: ' n)" || die "provider setup interrupted"
+    case "${reply}" in
+      y|Y|yes|YES)
+        if ! check_openrouter "${key}" "${base}" "${model}"; then
+          say "  The provider did not return a completion. Check the API key, model name, and credit."
+          reply="$(ask '  Save these settings anyway? [y/N]: ' n)" || die "provider setup interrupted"
+          case "${reply}" in y|Y|yes|YES) ;; *) die "review agent settings were not changed" ;; esac
+        fi ;;
+    esac
+  fi
+  set_env "${base_key}" "${base%/}"
+  set_env "${model_key}" "${model}"
+  set_env "${secret_key}" "${key}"
+  # Compose resolves exported values before --env-file. Apply the choices
+  # made here even when the shell had exported stale provider settings.
+  unset "${base_key}" "${model_key}" "${secret_key}"
+  if [ "${kind}" = "decision" ]; then
+    set_env PPD_JEV_API_FORMAT "${format}"
+    unset PPD_JEV_API_FORMAT
+  fi
+  say "  ${label} settings saved."
+}
+
+configure_provider_settings() {
+  configure_api decision
+  configure_api agent
+  [ "${WITH_REFERENCES}" -eq 1 ] || return 0
+
+  local mode current_mode
+  current_mode="$(env_value RAG_EMBED_MODE)"
+  current_mode="${current_mode:-local}"
+  say ""
+  say "RAG embeddings can use local BGE-M3 or your own API serving BGE-M3 (1024 dimensions)."
+  mode="$(ask "  Embedding mode (local or api) [${current_mode}]: " "${current_mode}")" \
+    || die "provider setup interrupted"
+  case "${mode}" in
+    api)
+      configure_api embeddings
+      [[ -n "$(env_value RAG_EMBED_API_BASE)" && -n "$(env_value RAG_EMBED_MODEL)" ]] \
+        || die "API embedding mode needs a base URL and a model name" ;;
+    local) ;;
+    *) die "embedding mode must be local or api" ;;
+  esac
+  set_env RAG_EMBED_MODE "${mode}"
+  unset RAG_EMBED_MODE
 }
 
 # The link an operator would click. Public releases serve this directly; for a
@@ -590,6 +705,21 @@ fi
 # These three are consulted by the questions below, so they have to be
 # defined before them: bash resolves a function at the point of the call,
 # and they used to sit several hundred lines further down.
+if [ "${CONFIGURE_PROVIDERS}" -eq 1 ]; then
+  cd -- "${INSTALL_DIR}"
+  step "provider configuration"
+  configure_provider_settings
+  deploy_args=()
+  [ "${WITH_REFERENCES}" -eq 0 ] || deploy_args+=(--with-references)
+  step "applying provider settings with the installed stack"
+  if [ "${DOCKER_NEEDS_SUDO}" -eq 1 ]; then
+    ${SUDO} bash deploy/deploy.sh "${deploy_args[@]}"
+  else
+    bash deploy/deploy.sh "${deploy_args[@]}"
+  fi
+  exit 0
+fi
+
 # ------------------------------------------------------------ downloading ---
 # What of the retrieval service this machine already has.
 #
@@ -1353,107 +1483,13 @@ else
   echo "  keeping the existing deploy/.env"
 fi
 
-# Collect what the services need, rather than leaving an operator to discover
-# which of twenty keys in a template are the two that actually matter. Only when
-# there is a terminal to ask on: the piped one-line install still reaches one,
-# because a pipe replaces stdin and leaves /dev/tty alone, but CI does not and
-# must fall through to the template exactly as before.
+# Prompt for providers on interactive installs and upgrades. Keep the
+# infrastructure settings on an upgrade, including existing shared keys.
+if [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ]; then
+  configure_provider_settings
+fi
+
 if [ "${UPGRADE}" -eq 0 ] && [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ]; then
-  say "Answer these and deploy/.env is written for you. Ctrl-C to stop and edit"
-  say "it by hand instead; anything already set is offered as the default."
-
-  # --- OpenRouter endpoint --------------------------------------------------
-  current_base="$(env_value OPENROUTER_BASE_URL)"
-  current_base="${current_base:-https://openrouter.ai/api/v1}"
-  say ""
-  say "The review agent's language model provider."
-  say "  1) https://openrouter.ai/api/v1        OpenRouter (default)"
-  say "  2) https://api.avalai.ir/v1            AvalAI"
-  say "  3) https://api.openai.com/v1           OpenAI-compatible endpoint"
-  say "  4) something else — a gateway or proxy you run"
-  case "$(ask '  choice [1]: ' 1)" in
-    2) base_url="https://api.avalai.ir/v1" ;;
-    3) base_url="https://api.openai.com/v1" ;;
-    4) base_url="$(ask '  base URL: ' "${current_base}")" ;;
-    *) base_url="https://openrouter.ai/api/v1" ;;
-  esac
-  set_env OPENROUTER_BASE_URL "${base_url}"
-
-  # --- model ---------------------------------------------------------------
-  current_model="$(env_value OPENROUTER_MODEL)"
-  current_model="${current_model:-google/gemma-4-31b-it}"
-  model="$(ask "  model [${current_model}]: " "${current_model}")"
-  set_env OPENROUTER_MODEL "${model}"
-
-  # --- API key, verified before it is accepted ------------------------------
-  existing_key="$(env_value OPENROUTER_API_KEY)"
-  while :; do
-    if [ -n "${existing_key//[[:space:]]/}" ]; then
-      say ""
-      say "  an API key is already set for ${base_url}"
-      case "$(ask '  keep it? [Y/n]: ' y)" in
-        n|N|no|NO) : ;;
-        *) api_key="${existing_key}" ;;
-      esac
-    fi
-    if [ -z "${api_key:-}" ]; then
-      say ""
-      api_key="$(ask_secret '  API key (not shown as you type): ')" || api_key=""
-    fi
-    if [ -z "${api_key//[[:space:]]/}" ]; then
-      say "  a key is required for the review agent to work"
-      case "$(ask '  try again? [Y/n]: ' y)" in
-        n|N|no|NO) api_key=""; break ;;
-      esac
-      existing_key=""; continue
-    fi
-    say "  checking the key against ${base_url} ..."
-    if check_openrouter "${api_key}" "${base_url}" "${model}"; then
-      say "  the key works"
-      break
-    fi
-    say "  that key did not return a completion — it may be wrong, out of"
-    say "  credit, or the model name may not exist on this endpoint"
-    case "$(ask '  use it anyway? [y/N]: ' n)" in
-      y|Y|yes|YES) break ;;
-    esac
-    api_key=""; existing_key=""
-  done
-  [ -n "${api_key:-}" ] && set_env OPENROUTER_API_KEY "${api_key}"
-
-  # The extension's explicit Decision model stage works with a configured
-  # endpoint even when screening remains disabled on the default pipeline.
-  say ""
-  current_decision_base="$(env_value PPD_JEV_BASE_URL)"
-  if [ -n "${current_decision_base}" ]; then
-    decision_prompt="  change the configured decision provider? [y/N]: "
-  else
-    decision_prompt="  configure an endpoint for the Decision model stage? [y/N]: "
-  fi
-  case "$(ask "${decision_prompt}" n)" in
-    y|Y|yes|YES)
-      current_decision_base="${current_decision_base:-https://api.avalai.ir/v1}"
-      decision_base="$(ask "  decision base URL [${current_decision_base}]: " "${current_decision_base}")"
-      case "${decision_base}" in
-        *avalai.ir*) default_format=decisions ;;
-        *) default_format=chat_completions ;;
-      esac
-      decision_format="$(ask "  API format (decisions or chat_completions) [${default_format}]: " "${default_format}")"
-      case "${decision_format}" in
-        decisions|chat_completions) ;;
-        *) die "unsupported decision API format" ;;
-      esac
-      current_decision_model="$(env_value PPD_JEV_MODEL)"
-      current_decision_model="${current_decision_model:-jev-latest}"
-      decision_model="$(ask "  decision model [${current_decision_model}]: " "${current_decision_model}")"
-      decision_key="$(ask_secret '  decision API key (leave empty to keep the existing value): ')" || decision_key=""
-      set_env PPD_JEV_BASE_URL "${decision_base}"
-      set_env PPD_JEV_API_FORMAT "${decision_format}"
-      set_env PPD_JEV_MODEL "${decision_model}"
-      [ -z "${decision_key}" ] || set_env PPD_JEV_API_KEY "${decision_key}"
-      ;;
-  esac
-
   # --- internal shared secret ----------------------------------------------
   existing_review="$(env_value INTERNAL_REVIEW_API_KEY)"
   say ""
@@ -1548,45 +1584,6 @@ if [ "${UPGRADE}" -eq 0 ] && [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "
     open) set_env PPD_API_KEY "" ;;
   esac
 
-  # --- reference embedding backend -----------------------------------------
-  # Local loads bge-m3 in the container (~2.8 GB RAM). API delegates embedding to
-  # an OpenAI-compatible endpoint (a few hundred MB), which must serve the same
-  # model the index was built with (BAAI/bge-m3, 1024-dim) or retrieval fails a
-  # dimension check at query time.
-  if [ "${WITH_REFERENCES}" -eq 1 ]; then
-    say ""
-    say "How should the reference service embed queries to search the index?"
-    say "  1) locally — loads bge-m3 in the container (~2.8 GB RAM) (default)"
-    say "  2) via an API — ~1.5 GB RAM (drops the 2.2 GB model; the ~1 GB index"
-    say "     still memory-maps). The endpoint must serve the same model the"
-    say "     index was built with (BAAI/bge-m3, 1024-dim)."
-    case "$(ask '  choice [1]: ' 1)" in
-      2)
-        set_env RAG_EMBED_MODE "api"
-        emb_base_default="$(env_value OPENROUTER_BASE_URL)"
-        emb_base_default="${emb_base_default:-https://api.avalai.ir/v1}"
-        emb_base="$(ask "  embeddings base URL [${emb_base_default}]: " "${emb_base_default}")"
-        set_env RAG_EMBED_API_BASE "${emb_base}"
-        emb_model="$(ask '  embedding model name on that endpoint [bge-m3]: ' 'bge-m3')"
-        set_env RAG_EMBED_MODEL "${emb_model}"
-        say ""
-        say "  embeddings API key — leave empty to reuse the review agent's key"
-        emb_key="$(ask_secret '  embeddings API key: ')" || emb_key=""
-        if [ -n "${emb_key//[[:space:]]/}" ]; then
-          set_env RAG_EMBED_API_KEY "${emb_key}"
-        else
-          set_env RAG_EMBED_API_KEY "$(env_value OPENROUTER_API_KEY)"
-          say "  reusing the review agent's key"
-        fi
-        say "  reference embedding: ${emb_base} (model ${emb_model})"
-        say "  if that model is not bge-m3, retrieval fails the 1024-dim check"
-        ;;
-      *)
-        set_env RAG_EMBED_MODE "local"
-        ;;
-    esac
-  fi
-
   # --- VirusTotal -----------------------------------------------------------
   # Collected here because this is where an operator sets the stack up, but it
   # belongs to the intelligence monitor rather than to either service started
@@ -1602,7 +1599,7 @@ if [ "${UPGRADE}" -eq 0 ] && [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "
     say "  saved for the monitor"
   fi
 
-  unset api_key existing_key existing_review supplied vt_key ppd_key emb_base emb_base_default emb_model emb_key
+  unset existing_review supplied vt_key ppd_key
   say ""
   say "  deploy/.env written"
 fi
