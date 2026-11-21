@@ -33,7 +33,8 @@ OWNER="${GITHUB_OWNER:-VibeATSCoder}"
 DETECTOR_VERSION="${DETECTOR_VERSION:-3.9.2}"
 REVIEW_VERSION="${REVIEW_VERSION:-1.12.0}"
 RAG_VERSION="${RAG_VERSION:-2.2.0}"
-STACK_VERSION="${STACK_VERSION:-1.2.1}"
+STACK_VERSION="${STACK_VERSION:-1.2.2}"
+STACK_TAG="${STACK_TAG:-installer-v${STACK_VERSION}}"
 
 AUTH=()
 if [ -n "${GITHUB_TOKEN:-}" ]; then
@@ -76,7 +77,7 @@ for asset in json.load(sys.stdin).get('assets', []):
 echo "mirroring into $(pwd)"
 grab phishing-detection-engine "v${DETECTOR_VERSION}" \
   "phishing-detection-engine-${DETECTOR_VERSION}.tar.gz"
-grab phishing-detection-engine "v${DETECTOR_VERSION}" \
+grab phishing-detection-engine "${STACK_TAG}" \
   "persianphish-stack-${STACK_VERSION}-deploy.tar.gz"
 grab agentic-phishing-review "v${REVIEW_VERSION}" \
   "agentic-phishing-review-${REVIEW_VERSION}.tar.gz"

@@ -317,7 +317,7 @@ def test_group_membership_is_read_from_the_database_not_the_process() -> None:
 
 def test_the_install_path_is_quoted_in_the_start_command() -> None:
     """An unquoted path breaks cd as soon as a directory contains a space."""
-    assert """run_cmd="cd '$(pwd)' && bash deploy/deploy.sh\"""" in SOURCE
+    assert """run_cmd="cd '$(pwd)' && bash deploy/deploy.sh --health-timeout ${HEALTH_TIMEOUT}\"""" in SOURCE
 
 
 def test_references_are_offered_on_an_ordinary_run() -> None:

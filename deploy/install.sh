@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 # One command to fetch, load and start the whole stack.
 #
-#   curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.2/install.sh | bash
+#   curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/installer-v1.2.2/install.sh | bash
 #
 # or, having downloaded it:
 #
 #   bash install.sh                      detector + reviewer
 #   bash install.sh --full               everything, including reference retrieval
 #   bash install.sh --with-references    same as --full
+#   bash install.sh --upgrade            reuse the existing directory and provider settings
+#   bash install.sh --upgrade --ask-token --full
+#                                       prompt privately for a GitHub token and update all services
+#   bash install.sh --download-timeout 86400
+#                                       seconds per asset transfer (default: 24 hours)
+#   bash install.sh --health-timeout 1800 seconds per service startup (default: 30 minutes)
 #   bash install.sh --download-only      fetch and load, do not start
 #   bash install.sh --dir ~/somewhere    install somewhere other than ./persianphish
 #   bash install.sh --recheck            re-verify sizes of files already present
@@ -105,6 +111,10 @@ WITH_REFERENCES=0
 REQUIRE_REFERENCES=0
 FETCH_INDEX=0
 DOWNLOAD_ONLY=0
+UPGRADE=0
+ASK_GITHUB_TOKEN=0
+DOWNLOAD_TIMEOUT=86400
+HEALTH_TIMEOUT=1800
 RECHECK=0
 # How the image artefacts are obtained. auto downloads them; local takes them
 # from a directory they were downloaded to earlier; manual prints each link and
@@ -128,7 +138,8 @@ RAG_VERSION="${RAG_VERSION:-2.2.0}"
 RAG_INDEX_VERSION="${RAG_INDEX_VERSION:-2.0.0}"
 RAG_INDEX_REPO="${RAG_INDEX_REPO:-phishing-detection-engine}"
 RAG_INDEX_TAG="${RAG_INDEX_TAG:-rag-index-${RAG_INDEX_VERSION}}"
-STACK_VERSION="${STACK_VERSION:-1.2.1}"
+STACK_VERSION="${STACK_VERSION:-1.2.2}"
+STACK_TAG="${STACK_TAG:-installer-v${STACK_VERSION}}"
 EXTENSION_VERSION="${EXTENSION_VERSION:-3.10.0}"
 
 while [ $# -gt 0 ]; do
@@ -136,22 +147,38 @@ while [ $# -gt 0 ]; do
     --dir) INSTALL_DIR="${2:?--dir needs a path}"; shift 2 ;;
     --with-references|--full) WITH_REFERENCES=1; REQUIRE_REFERENCES=1; shift ;;
     --download-only) DOWNLOAD_ONLY=1; shift ;;
+    --upgrade) UPGRADE=1; shift ;;
+    --ask-token) ASK_GITHUB_TOKEN=1; shift ;;
+    --download-timeout) DOWNLOAD_TIMEOUT="${2:?--download-timeout needs seconds}"; shift 2 ;;
+    --health-timeout) HEALTH_TIMEOUT="${2:?--health-timeout needs seconds}"; shift 2 ;;
     --recheck) RECHECK=1; shift ;;
     --no-prompt) NO_PROMPT=1; shift ;;
     --no-install) NO_INSTALL=1; shift ;;
     -i|--interactive) INTERACTIVE=1; shift ;;
     --manual) SOURCE_MODE="manual"; shift ;;
-    --token) GITHUB_TOKEN="${2:?--token needs a value}"; export GITHUB_TOKEN; shift 2 ;;
+    --token) GITHUB_TOKEN="${2:?--token needs a value}"; shift 2 ;;
     --artefact-dir)
       ARTEFACT_DIRS+=("${2:?--artefact-dir needs a path}")
       SOURCE_MODE="local"; shift 2 ;;
-    -h|--help) sed -n '2,75p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,/^# Safe to re-run/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
 
 die() { echo; echo "install failed: $*" >&2; exit 1; }
 step() { echo; echo "== $*"; }
+
+[[ "${DOWNLOAD_TIMEOUT}" =~ ^[1-9][0-9]{0,8}$ ]] || die "--download-timeout needs positive whole seconds"
+[[ "${HEALTH_TIMEOUT}" =~ ^[1-9][0-9]{0,8}$ ]] || die "--health-timeout needs positive whole seconds"
+
+if [ "${UPGRADE}" -eq 1 ]; then
+  [ -f "${INSTALL_DIR}/deploy/.env" ] \
+    || die "no existing deploy/.env found. Run from the install directory or pass --dir PATH."
+  if grep -Eq "^RAG_BASE_URL=['\"]?http://rag:8092/?['\"]?[[:space:]]*$" "${INSTALL_DIR}/deploy/.env"; then
+    WITH_REFERENCES=1
+    REQUIRE_REFERENCES=1
+  fi
+fi
 
 # ------------------------------------------------------ asking the operator ---
 # Read from the terminal, never from stdin. The documented way to run this is
@@ -252,7 +279,7 @@ PY
 }
 
 env_value() { # key -> current value in deploy/.env
-  sed -n "s/^$1=//p" deploy/.env 2>/dev/null | tail -n 1
+  sed -n "s/^$1=//p" "${2:-deploy/.env}" 2>/dev/null | tail -n 1
 }
 
 # Confirm the key and endpoint actually work before the install claims success.
@@ -600,9 +627,19 @@ host_memory_gb() {
 # in the image, so --full needs a path that only this machine knows. Look in the
 # places it actually lands before asking the operator for it.
 discover_index() {
-  local candidate
+  local candidate saved_index=""
+  if [ -f "${INSTALL_DIR}/deploy/.env" ]; then
+    saved_index="$(env_value RAG_INDEX_HOST_PATH "${INSTALL_DIR}/deploy/.env")"
+    saved_index="${saved_index#\"}"; saved_index="${saved_index%\"}"
+    saved_index="${saved_index#\'}"; saved_index="${saved_index%\'}"
+    case "${saved_index}" in
+      ""|/*) ;;
+      *) saved_index="${INSTALL_DIR}/deploy/${saved_index}" ;;
+    esac
+  fi
   for candidate in \
     "${RAG_INDEX_HOST_PATH:-}" \
+    "${saved_index}" \
     "${PWD}/Embedding_Index" \
     "${HOME}/Embedding_Index" \
     /var/services/idk/Phishing_RAG/Phishing_RAG_S3_Output/Output/Embedding_Index \
@@ -638,7 +675,7 @@ if [ "${INTERACTIVE}" -eq 1 ] && [ "${HAVE_TTY}" -eq 0 ]; then
   die "-i needs a terminal. Download install.sh and run it directly rather than piping it to bash."
 fi
 # The source menu is skipped when a flag already answered it.
-if [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ] \
+if [ "${UPGRADE}" -eq 0 ] && [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ] \
    && { [ "${INTERACTIVE}" -eq 1 ] || [ "${SOURCE_MODE}" = "auto" ]; }; then
   say ""
   say "How should the images be provided?"
@@ -674,7 +711,7 @@ fi
 # live inside the source-menu block, so passing --artefact-dir — the flag for
 # "I already have the images", which is exactly when someone is most likely to
 # have the reference image too — skipped the question entirely.
-if [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ]; then
+if [ "${UPGRADE}" -eq 0 ] && [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ]; then
 # Asked on every interactive run, not only under -i. Gating it behind a flag
 # meant the ordinary one-line install never mentioned references at all, so an
 # operator with the image already sitting on disk was never offered it.
@@ -866,22 +903,41 @@ EOF
   return 1
 }
 
-AUTH=()
+GITHUB_AUTH=""
 TOKEN_SOURCE=""
-if [ -z "${GITHUB_TOKEN:-}" ] && [ "${NO_TOKEN_DISCOVERY:-0}" != "1" ]; then
+set_github_auth() {
+  GITHUB_AUTH=""
+  [ -n "${GITHUB_TOKEN:-}" ] || return 0
+  [[ "${GITHUB_TOKEN}" != *[[:space:]]* ]] || die "GitHub token contains whitespace"
+  if [ -n "${GITHUB_USER:-}" ]; then
+    GITHUB_AUTH="Basic $(printf '%s:%s' "${GITHUB_USER}" "${GITHUB_TOKEN}" | base64 | tr -d '\n')"
+  else
+    GITHUB_AUTH="Bearer ${GITHUB_TOKEN}"
+  fi
+}
+
+github_request() {
+  # Supply the header over a file descriptor so the token is absent from curl's arguments.
+  curl --connect-timeout 120 --max-time 300 \
+    --header @<(printf 'Authorization: %s\n' "${GITHUB_AUTH}") "$@"
+}
+
+if [ "${ASK_GITHUB_TOKEN}" -eq 1 ]; then
+  GITHUB_TOKEN="$(ask_secret 'GitHub token (input hidden): ')" \
+    || die "--ask-token requires a terminal; use the GITHUB_TOKEN environment variable for automation"
+  [ -n "${GITHUB_TOKEN}" ] || die "no GitHub token entered"
+  TOKEN_SOURCE="terminal"
+elif [ -z "${GITHUB_TOKEN:-}" ] && [ "${NO_TOKEN_DISCOVERY:-0}" != "1" ]; then
   if found="$(discover_token)"; then
     GITHUB_TOKEN="${found%%|*}"
     TOKEN_SOURCE="${found##*|}"
   fi
 fi
-if [ -n "${GITHUB_USER:-}" ] && [ -n "${GITHUB_TOKEN:-}" ]; then
-  AUTH=(-u "${GITHUB_USER}:${GITHUB_TOKEN}")
-  echo "authenticating as ${GITHUB_USER}${TOKEN_SOURCE:+ (token from ${TOKEN_SOURCE})}"
-elif [ -n "${GITHUB_TOKEN:-}" ]; then
-  AUTH=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
-  echo "authenticating with a token${TOKEN_SOURCE:+ from ${TOKEN_SOURCE}}"
+set_github_auth
+if [ -n "${GITHUB_AUTH}" ]; then
+  echo "authenticating with a GitHub token${TOKEN_SOURCE:+ from ${TOKEN_SOURCE}}"
 else
-  echo "no credentials found; only public repositories will be reachable"
+  echo "no credentials found; public downloads remain available"
 fi
 
 mkdir -p "${INSTALL_DIR}" || die "cannot create ${INSTALL_DIR}"
@@ -919,7 +975,7 @@ prompt_for_credentials() { # repo
   token="$(ask_secret '  GitHub token: ')" || token=""
   [ -n "${token//[[:space:]]/}" ] || return 1
   GITHUB_TOKEN="${token}"
-  AUTH=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+  set_github_auth
   say "  using it for the rest of this install"
   return 0
 }
@@ -946,26 +1002,19 @@ resolve_asset() { # repo tag name -> "url|size"
     echo "    not on the mirror; falling back to GitHub" >&2
   fi
 
-  url="https://github.com/${OWNER}/${repo}/releases/download/${tag}/${name}"
-  if headers="$(curl -fsIL --connect-timeout 10 --max-time 30 --retry 2 --retry-all-errors "${url}" 2>/dev/null)"; then
-    printf '%s|%s' "${url}" "$(size_of "${headers}")"
-    return 0
-  fi
-
-  # A private asset cannot be taken from the browser download URL: that path
-  # wants a session cookie and answers 404 for a token, which reads like the
-  # file is missing. It has to be resolved to an asset id and pulled from the
-  # API instead.
-  if [ ${#AUTH[@]} -gt 0 ]; then
+  # A supplied token goes through the releases API first. Private browser
+  # download URLs require a session cookie and return 404 to CLI clients.
+  if [ -n "${GITHUB_AUTH}" ]; then
     local meta
-    meta="$(curl -fsSL --connect-timeout 10 --max-time 60 "${AUTH[@]}" -H "Accept: application/vnd.github+json" \
+    meta="$(github_request -fsSL --retry 2 \
+              -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${OWNER}/${repo}/releases/tags/${tag}" 2>/dev/null \
             | python3 -c "
 import json,sys
 want = sys.argv[1]
 try:
     data = json.load(sys.stdin)
-except Exception:
+except ValueError:
     raise SystemExit
 for asset in data.get('assets', []):
     if asset['name'] == want:
@@ -977,13 +1026,19 @@ for asset in data.get('assets', []):
       return 0
     fi
   fi
+
+  url="https://github.com/${OWNER}/${repo}/releases/download/${tag}/${name}"
+  if headers="$(curl -fsIL --connect-timeout 30 --max-time 90 --retry 2 "${url}" 2>/dev/null)"; then
+    printf '%s|%s' "${url}" "$(size_of "${headers}")"
+    return 0
+  fi
   return 1
 }
 
 # Fetch one release asset by name, resuming a partial file.
 fetch_asset() { # repo tag name
   local repo="$1" tag="$2" name="$3" resolved url expected local_size
-  local headers=()
+  local transfer=(curl)
 
   # Ask where it lives, but do not insist yet. An operator who already has the
   # file — the whole point of --artefact-dir and --manual — may be on a host
@@ -1016,7 +1071,7 @@ fetch_asset() { # repo tag name
 
   # Only now does a source actually have to exist.
   if [ -z "${url}" ]; then
-    if [ ${#AUTH[@]} -eq 0 ]; then
+    if [ -z "${GITHUB_AUTH}" ]; then
       prompt_for_credentials "${repo}" || true
       resolved="$(resolve_asset "${repo}" "${tag}" "${name}")" || resolved=""
       url="${resolved%%|*}"
@@ -1024,12 +1079,14 @@ fetch_asset() { # repo tag name
       [ -n "${resolved}" ] || { url=""; expected=""; }
     fi
     [ -n "${url}" ] || die "cannot fetch ${name} from ${OWNER}/${repo}.
-The repository is private and no usable credentials were given. Either make it
-public, or set GITHUB_TOKEN and run again. If you already have the file, pass
+Check the release asset exists and that your GitHub token can read the repository.
+Run again with --ask-token or set GITHUB_TOKEN. If you already have the file, pass
 --artefact-dir with the directory holding it."
   fi
   case "${url}" in
-    https://api.github.com/*) headers=("${AUTH[@]}" -H "Accept: application/octet-stream") ;;
+    https://api.github.com/*)
+      transfer=(github_request --proto-redir '=https' -H "Accept: application/octet-stream")
+      ;;
   esac
 
   if [ ! -f "${name}" ]; then
@@ -1050,8 +1107,10 @@ public, or set GITHUB_TOKEN and run again. If you already have the file, pass
   # hand, or 1 if the operator asks to retry the automatic fetch (loops here).
   local dl_ok=0 dl_attempt
   for dl_attempt in 1 2 3; do
-    if curl -fL -C - --connect-timeout 20 --retry 10 --retry-delay 5 --retry-all-errors --progress-bar \
-         ${headers[@]+"${headers[@]}"} -o "${name}" "${url}"; then
+    if "${transfer[@]}" -fL -C - --connect-timeout 120 --max-time "${DOWNLOAD_TIMEOUT}" \
+         --speed-limit 1 --speed-time 900 --retry 10 --retry-delay 5 \
+         --retry-max-time "${DOWNLOAD_TIMEOUT}" --retry-all-errors --progress-bar \
+         -o "${name}" "${url}"; then
       dl_ok=1; break
     fi
     if [ "${SOURCE_MODE}" != "manual" ] && [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ]; then
@@ -1145,7 +1204,7 @@ if [ "${SOURCE_MODE}" = "manual" ]; then
   say ""
   needed=0
   if ! stack_is_current && [ ! -f "${stack_bundle}" ]; then
-    say "  $(asset_url phishing-detection-engine "v${DETECTOR_VERSION}" "${stack_bundle}")"
+    say "  $(asset_url phishing-detection-engine "${STACK_TAG}" "${stack_bundle}")"
     needed=$((needed + 1))
   fi
   if ! docker image inspect "phishing-detection-engine:${DETECTOR_VERSION}" >/dev/null 2>&1 \
@@ -1278,7 +1337,7 @@ fi
 
 step "compose files and scripts"
 if ! stack_is_current; then
-  fetch_asset phishing-detection-engine "v${DETECTOR_VERSION}" "${stack_bundle}"
+  fetch_asset phishing-detection-engine "${STACK_TAG}" "${stack_bundle}"
   tar -xzf "${stack_bundle}" --strip-components=1 \
     || die "could not unpack the stack bundle"
 fi
@@ -1299,7 +1358,7 @@ fi
 # there is a terminal to ask on: the piped one-line install still reaches one,
 # because a pipe replaces stdin and leaves /dev/tty alone, but CI does not and
 # must fall through to the template exactly as before.
-if [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ]; then
+if [ "${UPGRADE}" -eq 0 ] && [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ]; then
   say "Answer these and deploy/.env is written for you. Ctrl-C to stop and edit"
   say "it by hand instead; anything already set is offered as the default."
 
@@ -1579,7 +1638,7 @@ fi
 
 # Quoted: an unquoted path breaks cd the moment a directory has a space in it,
 # which "cd /home/a b/persianphish" reports as "too many arguments".
-run_cmd="cd '$(pwd)' && bash deploy/deploy.sh"
+run_cmd="cd '$(pwd)' && bash deploy/deploy.sh --health-timeout ${HEALTH_TIMEOUT}"
 [ "${WITH_REFERENCES}" -eq 1 ] && run_cmd="${run_cmd} --with-references"
 
 # deploy.sh is a separate process, so the docker() override defined above does

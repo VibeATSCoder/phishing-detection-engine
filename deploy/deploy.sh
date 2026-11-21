@@ -10,6 +10,7 @@
 #   deploy.sh --with-references    also start the retrieval service
 #   deploy.sh --full               same as --with-references
 #   deploy.sh --verify             check artefact checksums before loading
+#   deploy.sh --health-timeout 1800  seconds per service startup
 #   deploy.sh --show-config        print the extension settings and exit
 #
 # Checksums are not verified by default. A mismatch used to abort the deploy,
@@ -36,27 +37,27 @@ IMAGE_DIR=""
 WITH_REFERENCES=0
 VERIFY_CHECKSUMS=0
 SHOW_CONFIG=0
+HEALTH_TIMEOUT=1800
 while [ $# -gt 0 ]; do
   case "$1" in
     --image-dir) IMAGE_DIR="${2:?--image-dir needs a path}"; shift 2 ;;
     --with-references|--full) WITH_REFERENCES=1; shift ;;
     --verify) VERIFY_CHECKSUMS=1; shift ;;
     --show-config) SHOW_CONFIG=1; shift ;;
+    --health-timeout) HEALTH_TIMEOUT="${2:?--health-timeout needs seconds}"; shift 2 ;;
     -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)
-      # This script is refreshed from main by the installer, so a flag that
-      # exists in the documentation but not in the copy on disk means the copy
-      # is older than the instructions being followed. Saying only "unknown
-      # option" left that as a puzzle.
       echo "unknown option: $1" >&2
       echo >&2
-      echo "If you were told this option exists, this copy of deploy.sh is out" >&2
-      echo "of date. Update it in place with:" >&2
-      echo "  curl -fsSL -o \"${BASH_SOURCE[0]}\" \\" >&2
-      echo "    https://raw.githubusercontent.com/VibeATSCoder/phishing-detection-engine/main/deploy/deploy.sh" >&2
+      echo "Download the current installer from the project releases and run install.sh --upgrade." >&2
       exit 2 ;;
   esac
 done
+
+[[ "${HEALTH_TIMEOUT}" =~ ^[1-9][0-9]{0,8}$ ]] || {
+  echo "--health-timeout needs positive whole seconds" >&2
+  exit 2
+}
 
 # Resolve before the cd below, or a relative --image-dir (". " being the obvious
 # one to type) silently becomes the script's own directory and nothing is found.
@@ -309,27 +310,31 @@ if [ "${WITH_REFERENCES}" -eq 1 ]; then
   echo "reference retrieval enabled"
 fi
 
-docker compose --env-file .env "${COMPOSE[@]}" up -d
-
 wait_healthy() { # service
-  local service="$1" id health
-  id="$(docker compose --env-file .env "${COMPOSE[@]}" ps -q "${service}")"
+  local service="$1" id status state health progress=0 started=$SECONDS elapsed
+  id="$(docker compose --env-file .env "${COMPOSE[@]}" ps -a -q "${service}")"
   if [ -z "${id}" ]; then
     echo "The ${service} container was not created." >&2
     return 1
   fi
   # The reference service loads a multi-gigabyte index before it reports ready,
   # so this waits minutes rather than seconds.
-  for _ in $(seq 1 150); do
-    health="$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "${id}")"
-    case "${health}" in
-      healthy) echo "${service}: healthy"; return 0 ;;
-      unhealthy)
+  while (( SECONDS - started < HEALTH_TIMEOUT )); do
+    status="$(docker inspect --format='{{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "${id}")"
+    read -r state health <<< "${status}"
+    case "${state}:${health}" in
+      running:healthy) echo "${service}: healthy"; return 0 ;;
+      running:none) echo "${service}: running (no healthcheck defined)"; return 0 ;;
+      exited:*|dead:*)
         docker compose --env-file .env "${COMPOSE[@]}" logs --no-color --tail=200 "${service}"
-        echo "${service} became unhealthy; review the logs above." >&2
+        echo "${service} stopped; review the logs above." >&2
         return 1 ;;
-      none) echo "${service}: running (no healthcheck defined)"; return 0 ;;
     esac
+    elapsed=$((SECONDS - started))
+    if (( elapsed >= progress )); then
+      echo "${service}: waiting for health (${state}, ${health}; ${elapsed}s elapsed, timeout ${HEALTH_TIMEOUT}s)"
+      progress=$((elapsed + 30))
+    fi
     sleep 2
   done
   docker compose --env-file .env "${COMPOSE[@]}" logs --no-color --tail=200 "${service}"
@@ -337,7 +342,13 @@ wait_healthy() { # service
   return 1
 }
 
+# Let the installer apply its startup budget to the reviewer before starting
+# the detector, whose Compose dependency otherwise stops on the first unhealthy probe.
+initial_services=(review)
+[ "${WITH_REFERENCES}" -eq 1 ] && initial_services+=(rag)
+docker compose --env-file .env "${COMPOSE[@]}" up -d --no-deps "${initial_services[@]}"
 wait_healthy review
+docker compose --env-file .env "${COMPOSE[@]}" up -d --no-deps detector
 wait_healthy detector
 [ "${WITH_REFERENCES}" -eq 1 ] && wait_healthy rag
 
