@@ -16,7 +16,7 @@ from .config import DetectorConfig
 from .crawl import BrowserCrawler, HttpCrawler, from_browser_payload
 from .domain_facts import DomainFacts, collect_domain_facts
 from .enamad import extract_seal, service_is_answering, verify_seal
-from .jev import JevClient, JevFinding, apply_jev, jev_structure, screening_text
+from .jev import DecisionThresholds, JevClient, JevFinding, apply_jev, jev_structure, screening_text
 from .jev_local import LocalJev
 
 LOGGER = logging.getLogger(__name__)
@@ -202,10 +202,13 @@ class Detector:
         use_rf: bool | None = None,
         pipeline: Sequence[PipelineStage] | None = None,
         on_progress: ProgressCallback | None = None,
+        decision_thresholds: DecisionThresholds | None = None,
     ) -> DetectionResult:
         """Trace-wrapped entry point; the pipeline itself lives in ``_detect``."""
         with span("detector.detect", **url_labels(url)):
-            return await self._detect(url, browser_evidence, agent_references, use_jev, use_rf, pipeline, on_progress)
+            return await self._detect(
+                url, browser_evidence, agent_references, use_jev, use_rf, pipeline, on_progress, decision_thresholds,
+            )
 
     async def _detect(
         self,
@@ -216,6 +219,7 @@ class Detector:
         use_rf: bool | None = None,
         pipeline: Sequence[PipelineStage] | None = None,
         on_progress: ProgressCallback | None = None,
+        decision_thresholds: DecisionThresholds | None = None,
     ) -> DetectionResult:
         started = time.perf_counter()
         request_id = uuid.uuid4().hex
@@ -334,7 +338,9 @@ class Detector:
             )
         _progress(on_progress, "crawl", "completed")
         if pipeline is not None:
-            return await self._ordered_pipeline(request_id, normalized, evidence, pipeline, started, latency, on_progress)
+            return await self._ordered_pipeline(
+                request_id, normalized, evidence, pipeline, started, latency, on_progress, decision_thresholds,
+            )
 
         if run_fast and self.artifact is not None:
             _progress(on_progress, "rf", "started")
@@ -497,7 +503,10 @@ class Detector:
                 )
                 verdict, agent_reasons = self._reconcile_agent(agent_review, features, combined, evidence)
                 reasons.extend(agent_reasons)
-                agent_audit = {"status": "completed", **agent_review.audit_summary()}
+                agent_audit = {
+                    "status": "unavailable" if agent_review.provider_failed else "completed",
+                    **agent_review.audit_summary(),
+                }
                 agent_evidence_codes = list(agent_review.evidence_codes)
                 METRICS.agent_calls.labels(outcome="completed").inc()
                 METRICS.agent_reconciliation.labels(
@@ -567,6 +576,7 @@ class Detector:
         self, request_id: str, url: str, evidence: CrawlEvidence,
         pipeline: Sequence[PipelineStage], started: float, latency: dict[str, float],
         on_progress: ProgressCallback | None = None,
+        decision_thresholds: DecisionThresholds | None = None,
     ) -> DetectionResult:
         final_url = evidence.final_url or url
         verdict = Verdict.SUSPICIOUS
@@ -606,7 +616,9 @@ class Detector:
                 elif stage == "decision":
                     if features is None:
                         features = await asyncio.to_thread(extract_features, evidence, DomainFacts())
-                    verdict, opinion, decision_reasons = await self._pipeline_decision(evidence, url, features)
+                    verdict, opinion, decision_reasons = await self._pipeline_decision(
+                        evidence, url, features, decision_thresholds,
+                    )
                     summary["jev" if self.jev is not None else "jev_local"] = opinion
                     reasons.extend(decision_reasons)
                     decision_blocks_clear = (
@@ -624,6 +636,7 @@ class Detector:
                         suspect_url=final_url, suspect_html=evidence.html,
                     )
                     summary["rag"] = {"references_retrieved": len(references), "reference_matches": matches}
+                    reasons.append("rag_search_completed")
                     reasons.append("rag_references_retrieved" if references else "rag_no_references")
                 elif stage == "agent":
                     if self.agent is None:
@@ -640,7 +653,8 @@ class Detector:
                     )
                     verdict, agent_reasons = self._reconcile_agent(review, features, scores["combined"], evidence)
                     reasons.extend(agent_reasons)
-                    summary["agent_review"] = {"status": "completed", **review.audit_summary()}
+                    step["status"] = "unavailable" if review.provider_failed else "completed"
+                    summary["agent_review"] = {"status": step["status"], **review.audit_summary()}
                     agent_codes = list(review.evidence_codes)
                     risk = review.risk_score if review.risk_score is not None else risk
             except Exception as exc:
@@ -669,16 +683,22 @@ class Detector:
 
     async def _pipeline_decision(
         self, evidence: CrawlEvidence, url: str, features: Mapping[str, float],
+        thresholds: DecisionThresholds | None = None,
     ) -> tuple[Verdict, dict[str, Any], list[str]]:
         if self.jev is not None:
             finding = await self._screen(evidence, url, features)
+            policy = thresholds or DecisionThresholds.from_config(self.config)
             verdict, reasons = apply_jev(
                 Verdict.SUSPICIOUS, finding,
                 _observed_risk(features) or features["unicode_confusable_count"] > 0
                 or features["cross_domain_redirect_count"] > 0,
-                self.config, standalone=True,
+                self.config, standalone=True, thresholds=policy,
             )
-            return verdict, finding.audit_summary(), reasons
+            return verdict, {
+                **finding.audit_summary(),
+                "thresholds": policy.model_dump(),
+                "gates": [reason for reason in reasons if reason.startswith("jev_gate_")],
+            }, reasons
         if self.jev_local is None:
             raise AgentServiceError("decision_model_unconfigured")
         risk = await asyncio.to_thread(self.jev_local.score, features)

@@ -164,3 +164,39 @@ def test_detect_streams_progress_and_preserves_json_response(tmp_path: Path):
                 {"type": "result", "result": expected},
             ]
         assert calls == [payload["pipeline"], payload["pipeline"]]
+
+
+def test_threshold_overrides_require_explicit_remote_decision_stage(tmp_path: Path):
+    from dataclasses import replace
+    from types import SimpleNamespace
+
+    url = "https://example.com/"
+    thresholds = {
+        "escalation_risk": 0.20, "minimum_confidence": 0.80,
+        "legitimate_max_risk": 0.08, "allow_early_clear": True,
+    }
+    with TestClient(create_app(config(tmp_path))) as client:
+        assert client.get("/v1/pipeline").json()["decision_thresholds"] is False
+        assert client.post("/v1/detect", json={
+            "url": url, "pipeline": ["decision"], "decision_thresholds": thresholds,
+        }).status_code == 422
+
+    settings = replace(config(tmp_path), jev_base_url="https://provider.example/v1", jev_model="fixture")
+    with TestClient(create_app(settings)) as client:
+        async def detect(*args, **options):
+            assert options["decision_thresholds"].model_dump() == thresholds
+            return SimpleNamespace(to_dict=lambda: {"verdict": "legitimate"})
+
+        client.app.state.detector.detect = detect
+        assert client.get("/v1/pipeline").json()["decision_thresholds"] is True
+        assert client.post("/v1/detect", json={
+            "url": url, "pipeline": ["decision"], "decision_thresholds": thresholds,
+        }).json() == {"verdict": "legitimate"}
+        for stages, override in (
+            (["rag"], thresholds),
+            (["decision"], {**thresholds, "legitimate_max_risk": 0.30}),
+            (["decision"], {**thresholds, "minimum_confidence": 1.1}),
+        ):
+            assert client.post("/v1/detect", json={
+                "url": url, "pipeline": stages, "decision_thresholds": override,
+            }).status_code == 422

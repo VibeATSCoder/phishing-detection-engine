@@ -124,6 +124,10 @@ class AgentReview:
     timings_ms: Dict[str, float] = field(default_factory=dict)
     review_passes: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
+    @property
+    def provider_failed(self) -> bool:
+        return "agent_unavailable_or_invalid" in self.reasons
+
     def audit_summary(self) -> Dict[str, Any]:
         return {
             "analysis_id": self.analysis_id,

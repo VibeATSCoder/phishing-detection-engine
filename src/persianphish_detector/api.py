@@ -22,6 +22,7 @@ from .observability import (
     instrument_app,
     set_build_info,
 )
+from .jev import DecisionThresholds
 from .orchestrator import Detector, PIPELINE_STAGES, PipelineStage
 from .url_utils import canonical_url
 
@@ -94,6 +95,7 @@ class DetectRequest(BaseModel):
     #: False skips the RF/TCN ensemble. True uses it when enabled by the service.
     use_rf: Optional[bool] = None
     pipeline: list[PipelineStage] | None = Field(default=None, min_length=1, max_length=4)
+    decision_thresholds: DecisionThresholds | None = None
 
     @model_validator(mode="after")
     def validate_total_reference_size(self) -> "DetectRequest":
@@ -102,6 +104,8 @@ class DetectRequest(BaseModel):
                 raise ValueError("duplicate_pipeline_stage")
             if self.use_rf is not None or self.use_jev is not None or self.agent_references:
                 raise ValueError("pipeline_conflicts_with_legacy_stage_controls")
+        if self.decision_thresholds is not None and "decision" not in (self.pipeline or ()):
+            raise ValueError("decision_thresholds_require_decision_stage")
         total = sum(len(item.html.encode("utf-8", errors="replace")) for item in self.agent_references)
         if total > 5_000_000:
             raise ValueError("agent_reference_total_too_large")
@@ -219,6 +223,7 @@ def create_app(config: DetectorConfig | None = None) -> FastAPI:
         return {
             "service_version": __version__,
             "stages": list(PIPELINE_STAGES),
+            "decision_thresholds": detector.jev is not None,
             "configured": {
                 "rf": selected_config.fast_models_enabled and detector.artifact is not None,
                 "decision": detector.jev is not None or detector.jev_local is not None,
@@ -238,6 +243,10 @@ def create_app(config: DetectorConfig | None = None) -> FastAPI:
         options: dict[str, Any] = {"use_jev": payload.use_jev, "use_rf": payload.use_rf}
         if payload.pipeline is not None:
             options["pipeline"] = payload.pipeline
+        if payload.decision_thresholds is not None:
+            if detector.jev is None:
+                raise HTTPException(status_code=422, detail="decision_thresholds_require_remote_provider")
+            options["decision_thresholds"] = payload.decision_thresholds
 
         async def run(**extra: Any) -> dict[str, Any]:
             result = await detector.detect(payload.url, browser_payload, agent_references, **options, **extra)

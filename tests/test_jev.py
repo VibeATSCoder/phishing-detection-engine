@@ -193,3 +193,31 @@ def test_an_unavailable_finding_defers_a_fast_clear():
         Verdict.LEGITIMATE, JevFinding(ok=False, error="client_timeout"), False, _cfg()
     )
     assert verdict == Verdict.SUSPICIOUS and reasons == ["jev_unavailable:client_timeout"]
+
+
+def test_decision_thresholds_require_opt_in_and_keep_observed_risk_veto():
+    from persianphish_detector.jev import DecisionThresholds
+
+    finding = _finding(phishing_score=0.07, label="legitimate", confidence=0.90)
+    cfg = _cfg()
+    baseline, reasons = apply_jev(Verdict.SUSPICIOUS, finding, False, cfg, standalone=True)
+    assert baseline == Verdict.SUSPICIOUS
+    assert "jev_gate_early_clear_disabled" in reasons
+
+    thresholds = DecisionThresholds(
+        escalation_risk=0.20, minimum_confidence=0.80, legitimate_max_risk=0.08, allow_early_clear=True,
+    )
+    assert apply_jev(
+        Verdict.SUSPICIOUS, finding, False, cfg, standalone=True, thresholds=thresholds,
+    )[0] == Verdict.LEGITIMATE
+    vetoed, reasons = apply_jev(
+        Verdict.SUSPICIOUS, finding, True, cfg, standalone=True, thresholds=thresholds,
+    )
+    assert vetoed == Verdict.SUSPICIOUS
+    assert "jev_gate_observed_risk" in reasons
+    strict_confidence = thresholds.model_copy(update={"minimum_confidence": 0.95})
+    uncertain, reasons = apply_jev(
+        Verdict.SUSPICIOUS, finding, False, cfg, standalone=True, thresholds=strict_confidence,
+    )
+    assert uncertain == Verdict.SUSPICIOUS
+    assert "jev_gate_confidence" in reasons

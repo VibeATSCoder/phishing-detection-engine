@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, Mapping, Optional, Tuple
 from urllib.parse import urlsplit
 
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
 from .jev_decisions import decisions_payload, decisions_scores
 from .types import Verdict
 
@@ -319,6 +321,30 @@ def jev_structure(features: Mapping[str, float], final_url: str) -> Dict[str, An
     return summary
 
 
+class DecisionThresholds(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    escalation_risk: float = Field(ge=0, le=1, strict=True)
+    minimum_confidence: float = Field(ge=0, le=1, strict=True)
+    legitimate_max_risk: float = Field(ge=0, le=1, strict=True)
+    allow_early_clear: bool = Field(default=False, strict=True)
+
+    @model_validator(mode="after")
+    def validate_cutoffs(self) -> "DecisionThresholds":
+        if self.legitimate_max_risk > self.escalation_risk:
+            raise ValueError("legitimate_max_risk_cannot_exceed_escalation_risk")
+        return self
+
+    @classmethod
+    def from_config(cls, config: "DetectorConfig") -> "DecisionThresholds":
+        return cls.model_construct(
+            escalation_risk=config.jev_escalate_threshold,
+            minimum_confidence=config.jev_min_clear_confidence,
+            legitimate_max_risk=config.jev_legit_threshold,
+            allow_early_clear=config.jev_short_circuit_legit,
+        )
+
+
 def apply_jev(
     verdict: Verdict,
     finding: JevFinding,
@@ -326,6 +352,7 @@ def apply_jev(
     config: "DetectorConfig",
     *,
     standalone: bool = False,
+    thresholds: DecisionThresholds | None = None,
 ) -> Tuple[Verdict, list[str]]:
     """Apply the screener before deep review, with standalone clears opt-in."""
     if verdict == Verdict.PHISHING:
@@ -333,13 +360,23 @@ def apply_jev(
     if not finding.ok:
         return Verdict.SUSPICIOUS, [f"jev_unavailable:{finding.error or 'unknown'}"[:80]]
     reasons = [f"jev_risk:{finding.risk:.2f}", f"jev_label:{finding.label}"]
-    if (
-        deterministic_risk
-        or finding.label != "legitimate"
-        or finding.risk >= config.jev_escalate_threshold
-        or finding.confidence < config.jev_min_clear_confidence
-    ):
-        return Verdict.SUSPICIOUS, [*reasons, "jev_escalated_to_review"]
-    if standalone and config.jev_short_circuit_legit and finding.risk <= config.jev_legit_threshold:
-        return Verdict.LEGITIMATE, [*reasons, "jev_short_circuit_legit"]
+    policy = thresholds or DecisionThresholds.from_config(config)
+    gates = []
+    if deterministic_risk:
+        gates.append("jev_gate_observed_risk")
+    if finding.label != "legitimate":
+        gates.append("jev_gate_label")
+    if finding.risk >= policy.escalation_risk:
+        gates.append("jev_gate_escalation_risk")
+    if finding.confidence < policy.minimum_confidence:
+        gates.append("jev_gate_confidence")
+    if gates:
+        return Verdict.SUSPICIOUS, [*reasons, "jev_escalated_to_review", *gates]
+    if standalone:
+        if not policy.allow_early_clear:
+            reasons.append("jev_gate_early_clear_disabled")
+        elif finding.risk > policy.legitimate_max_risk:
+            reasons.append("jev_gate_legitimate_risk")
+        else:
+            return Verdict.LEGITIMATE, [*reasons, "jev_short_circuit_legit"]
     return verdict, reasons
