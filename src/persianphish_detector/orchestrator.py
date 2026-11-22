@@ -14,6 +14,7 @@ from .allowlist import CATALOG_VERSION, allowlisted_domain
 from .agent import AgentClient, AgentReview, AgentServiceError
 from .config import DetectorConfig
 from .crawl import BrowserCrawler, HttpCrawler, from_browser_payload
+from .crawl.quality import VPN_ACCESS_RESTRICTED
 from .domain_facts import DomainFacts, collect_domain_facts
 from .enamad import extract_seal, service_is_answering, verify_seal
 from .jev import DecisionThresholds, JevClient, JevFinding, apply_jev, jev_structure, screening_text
@@ -104,6 +105,10 @@ from .url_utils import UnsafeURL, canonical_url, resolve_public_addresses
 PipelineStage = Literal["rf", "decision", "rag", "agent"]
 PIPELINE_STAGES = get_args(PipelineStage)
 ProgressCallback = Callable[[dict[str, str]], None]
+
+
+def _is_terminal_crawl_failure(evidence: CrawlEvidence) -> bool:
+    return evidence.http_status == 403 or VPN_ACCESS_RESTRICTED in evidence.quality_reasons
 
 
 def _progress(
@@ -312,7 +317,7 @@ class Detector:
             not evidence.usable
             and self.browser
             and not browser_evidence
-            and evidence.http_status != 403
+            and not _is_terminal_crawl_failure(evidence)
             and evidence.status in {
                 CrawlStatus.PARTIAL,
                 CrawlStatus.BLOCKED,
@@ -324,7 +329,7 @@ class Detector:
             browser_result = await self.browser.fetch(normalized)
             latency["browser"] = (time.perf_counter() - browser_started) * 1000
             if (
-                browser_result.usable or browser_result.http_status == 403
+                browser_result.usable or _is_terminal_crawl_failure(browser_result)
                 or browser_result.quality_score > evidence.quality_score
             ):
                 evidence = browser_result
@@ -362,7 +367,7 @@ class Detector:
             rendered = await self.browser.fetch(normalized)
             latency["browser"] = (time.perf_counter() - browser_started) * 1000
             latency["crawl"] += latency["browser"]
-            if rendered.http_status == 403:
+            if _is_terminal_crawl_failure(rendered):
                 return self._failed_crawl(request_id, normalized, rendered, run_fast, started, latency)
             if rendered.usable:
                 evidence = rendered
@@ -729,7 +734,7 @@ class Detector:
             request_id, normalized, evidence.final_url or normalized, Verdict.CRAWL_FAILED, 0.5,
             "browser" if evidence.source.startswith("browser") else "http",
             evidence.status, ["crawl_not_usable", *evidence.quality_reasons],
-            {"rf": None, "tcn": self._predict_tcn(normalized) if run_fast and evidence.http_status != 403 else None},
+            {"rf": None, "tcn": self._predict_tcn(normalized) if run_fast and not _is_terminal_crawl_failure(evidence) else None},
             started, summary, extra_latency=latency,
             evidence_items=derive_evidence(crawl_status=evidence.status.value),
         )

@@ -1,3 +1,5 @@
+import pytest
+
 from persianphish_detector.crawl.quality import assess_crawl_quality
 from persianphish_detector.types import CrawlStatus
 
@@ -26,3 +28,19 @@ def test_normal_page_is_usable():
     status, score, reasons = assess_crawl_quality(200, "text/html; charset=utf-8", html)
     assert status == CrawlStatus.OK
     assert score >= 0.55
+
+
+@pytest.mark.parametrize("notice", [
+    "<h1>لطفاً VPN خود را خاموش کنید</h1><p>برای دسترسی به وب‌سایت، لطفاً VPN خود را خاموش نمایید.</p>",
+    "<h1>لطفاً وي‌پي‌ان خود را غيرفعال كنيد</h1><p>برای ورود به این سایت</p>",
+    "<h1>Please turn off your VPN</h1><p>To access this website, disable your VPN.</p>",
+])
+def test_vpn_access_notice_is_blocked_even_on_http_200(notice):
+    html = f"<html><head><title>Access restriction</title></head><body>{notice}<p>IP: 192.0.2.1</p></body></html>"
+    assert assess_crawl_quality(200, "text/html", html) == (CrawlStatus.BLOCKED, 0.0, ["vpn_access_restricted"])
+
+
+@pytest.mark.parametrize("extra", ["<input name='password'>", "<a href='/continue'>Continue</a>", "<p>VPN help and troubleshooting. </p>" * 21])
+def test_vpn_text_in_interactive_or_substantive_content_is_not_a_block(extra):
+    html = f"<main><h1>Please disable your VPN to access the site</h1>{extra}</main>"
+    assert "vpn_access_restricted" not in assess_crawl_quality(200, "text/html", html)[2]

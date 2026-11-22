@@ -389,27 +389,51 @@ async def test_detector_does_not_call_agent_when_crawl_failed(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_detector_stops_on_http_403_before_browser_or_scores(tmp_path: Path):
+@pytest.mark.parametrize("http_status,reason", [(403, "http_403"), (200, "vpn_access_restricted")])
+@pytest.mark.parametrize("pipeline", [None, ("rf", "decision", "rag", "agent")])
+async def test_detector_stops_on_access_block_before_browser_or_scores(tmp_path: Path, http_status, reason, pipeline):
     from unittest.mock import AsyncMock, Mock
 
     evidence = CrawlEvidence(
-        target_url="https://blocked.example/", source="http", http_status=403,
-        status=CrawlStatus.BLOCKED, quality_reasons=["http_403"],
+        target_url="https://blocked.example/", source="http", http_status=http_status,
+        status=CrawlStatus.BLOCKED, quality_reasons=[reason],
     )
     agent = FakeAgent(review("phishing", 0.99, 0.99))
     detector = make_detector(tmp_path, evidence, Verdict.SUSPICIOUS, agent)
     detector.browser = AsyncMock()
     detector.jev = AsyncMock()
     detector.tcn = Mock()
-    result = await detector.detect(evidence.target_url, use_jev=True)
+    agent.retrieve_references = AsyncMock()
+    result = await detector.detect(evidence.target_url, use_jev=True, pipeline=pipeline)
     assert result.verdict == Verdict.CRAWL_FAILED
-    assert result.reason_codes == ["crawl_not_usable", "http_403"]
+    assert result.reason_codes == ["crawl_not_usable", reason]
     assert result.model_scores == {"rf": None, "tcn": None}
     assert "browser" not in result.latency_ms
+    if pipeline:
+        assert result.evidence_summary["pipeline"] == [{"stage": stage, "status": "skipped"} for stage in pipeline]
     detector.browser.fetch.assert_not_awaited()
     detector.jev.score.assert_not_awaited()
     detector.tcn.predict.assert_not_called()
+    agent.retrieve_references.assert_not_awaited()
     assert agent.calls == []
+
+
+@pytest.mark.asyncio
+async def test_browser_vpn_notice_takes_precedence_over_partial_http(tmp_path: Path):
+    from unittest.mock import AsyncMock
+
+    partial = replace(usable_evidence(), status=CrawlStatus.PARTIAL, quality_score=0.4)
+    blocked = replace(partial, source="browser", status=CrawlStatus.BLOCKED, quality_score=0.0,
+                      quality_reasons=["vpn_access_restricted"])
+    agent = FakeAgent(review("phishing", 0.99, 0.99))
+    detector = make_detector(tmp_path, partial, Verdict.SUSPICIOUS, agent)
+    detector.browser = SimpleNamespace(fetch=AsyncMock(return_value=blocked))
+    result = await detector.detect(partial.target_url, pipeline=("decision", "rag", "agent"))
+    assert result.verdict == Verdict.CRAWL_FAILED
+    assert result.stage == "browser"
+    assert result.reason_codes == ["crawl_not_usable", "vpn_access_restricted"]
+    assert [step["status"] for step in result.evidence_summary["pipeline"]] == ["skipped"] * 3
+    assert not agent.calls
 
 
 @pytest.fixture

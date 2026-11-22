@@ -1,6 +1,6 @@
 # Minimal integrated deployment
 
-Stack 1.2.4 uses detector v3.9.4, reviewer v1.12.1, extension v3.12.0, and optional RAG v2.2.0. The component contract is recorded in [COMPATIBILITY.json](COMPATIBILITY.json).
+Stack 1.2.5 uses detector v3.9.5, reviewer v1.12.1, extension v3.12.1, and optional RAG v2.2.0. The component contract is recorded in [COMPATIBILITY.json](COMPATIBILITY.json).
 
 This bundle runs two services:
 
@@ -21,7 +21,7 @@ No checkout, no build, no `gh`. This downloads every release artefact, loads
 each image, writes one aggregated `.env`, and starts the stack:
 
 ```bash
-curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.4/install.sh | bash
+curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.5/install.sh | bash
 ```
 
 It stops and tells you what to fill in the first time, because
@@ -44,7 +44,7 @@ Run these commands from the directory containing `deploy/.env`. Use
 
 ```bash
 curl -fL --progress-bar --connect-timeout 120 --max-time 86400 \
-  -o install.sh https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.4/install.sh
+  -o install.sh https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.5/install.sh
 bash install.sh --upgrade --ask-token --full
 ```
 
@@ -95,7 +95,7 @@ stack bundle from the two releases into one directory, unpack the bundle, and
 run the script:
 
 ```bash
-tar -xzf persianphish-stack-1.2.4-deploy.tar.gz     # compose files and this guide
+tar -xzf persianphish-stack-1.2.5-deploy.tar.gz     # compose files and this guide
 cp deploy/stack.env.example deploy/.env             # then set the two keys
 bash deploy/deploy.sh
 ```
@@ -193,9 +193,10 @@ The detector reports `latency_ms.total` for work through the verdict.
 It also reports crawl time, domain facts, feature extraction, combined
 RF/TCN time, Jev time and agent time when applicable. Under crawl, the
 `http`, `browser` and `browser_input` timings identify how evidence was
-obtained. These are included in `crawl`. An HTTP 403 ends the content
-pipeline with `crawl_failed` before a browser retry or a model or reviewer
-call.
+obtained. These are included in `crawl`. An HTTP 403 or a recognized VPN
+access notice ends the content pipeline with `crawl_failed` before a browser
+retry or a model or reviewer call. VPN notices can arrive with HTTP 200 and
+appear as `vpn_access_restricted` in the reason codes.
 
 Read the RF/TCN verdict in `evidence_summary.fast_verdict` and scores in
 `model_scores`. For an escalated case, `evidence_summary.agent_review`
@@ -348,7 +349,7 @@ being down degrades reviews to the same behaviour as not running it at all.
 
 ## Manual installation and extension testing
 
-Download [install.sh](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.4/install.sh)
+Download [install.sh](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.5/install.sh)
 into your installation directory. Run it in a terminal so it can show the
 release links and check for local files.
 
@@ -360,12 +361,12 @@ Use these release assets if you are downloading on a separate computer.
 
 | Component | Assets |
 | --- | --- |
-| Detector | [Docker image and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/v3.9.4) |
-| Stack | [Deployment bundle](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.4/persianphish-stack-1.2.4-deploy.tar.gz) |
+| Detector | [Docker image and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/v3.9.5) |
+| Stack | [Deployment bundle](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.5/persianphish-stack-1.2.5-deploy.tar.gz) |
 | Reviewer | [Docker image and checksum](https://github.com/VibeATSCoder/agentic-phishing-review/releases/tag/v1.12.1) |
 | RAG | [Image parts, checksums, and loader](https://github.com/VibeATSCoder/phishing-rag-service/releases/tag/v2.2.0) |
 | Reference index | [Index parts and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/rag-index-2.0.0) |
-| Browser extension | [Chrome/Edge ZIP](https://github.com/VibeATSCoder/phishingshield-persian/releases/download/v3.12.0/phishingshield-persian-v3.12.0.zip) |
+| Browser extension | [Chrome/Edge ZIP](https://github.com/VibeATSCoder/phishingshield-persian/releases/download/v3.12.1/phishingshield-persian-v3.12.1.zip) |
 
 The installer prompts for the reviewer provider and offers a separate Decision
 model endpoint. For AvalAI Jev use base URL `https://api.avalai.ir/v1`, format

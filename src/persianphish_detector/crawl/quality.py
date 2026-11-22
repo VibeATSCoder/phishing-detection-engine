@@ -2,12 +2,22 @@ from __future__ import annotations
 
 import math
 import re
+import unicodedata
+from html import unescape
 from typing import List, Tuple
 
 from ..types import CrawlStatus
 
 
 BLOCKED_HTTP_STATUS = {401, 403, 407, 429}
+VPN_ACCESS_RESTRICTED = "vpn_access_restricted"
+PERSIAN_VPN_PROMPT = re.compile(
+    r"^(?:لطفا\s+)?(?:vpn|وی[\s-]*پی[\s-]*ان)(?:\s+خود)?\s+را\s+"
+    r"(?:خاموش|غیرفعال|غیر فعال)\s+(?:کنید|نمایید|کنین)(?!\w)"
+)
+ENGLISH_VPN_PROMPT = re.compile(r"^(?:please\s+)?(?:disable|turn off|disconnect from)\s+(?:your\s+)?vpn\b")
+PERSIAN_WEB_ACCESS = re.compile(r"برای\s+(?:دسترسی\s+به|ورود\s+به|مشاهده)\s+(?:این\s+)?(?:وب\s*سایت|سایت|صفحه)")
+ENGLISH_WEB_ACCESS = re.compile(r"\bto (?:access|visit|view) (?:this |the )?(?:website|site|page)\b")
 CHALLENGE_MARKERS = (
     "access denied", "attention required", "checking your browser", "cloudflare ray id",
     "enable javascript and cookies", "forbidden", "just a moment", "security check",
@@ -24,6 +34,25 @@ def _visible_text(html: str) -> str:
     stripped = re.sub(r"<(script|style|noscript)\b[^>]*>.*?</\1>", " ", html, flags=re.I | re.S)
     stripped = re.sub(r"<[^>]+>", " ", stripped)
     return re.sub(r"\s+", " ", stripped).strip()
+
+
+def _is_vpn_access_notice(html: str) -> bool:
+    body = re.sub(r"<head\b[^>]*>.*?</head\s*>", " ", html, count=1, flags=re.I | re.S)
+    if re.search(r"<(?:form|input|textarea|select|iframe)\b|<a\b[^>]*\bhref\s*=", body, re.I):
+        return False
+    visible = unescape(_visible_text(body))
+    if len(visible) > 450:
+        return False
+    text = unicodedata.normalize("NFKC", visible).lower()
+    text = text.translate(str.maketrans("يك", "یک"))
+    text = re.sub(r"[\u0640\u064b-\u065f\u0670\u200e\u200f\u202a-\u202e\u2066-\u2069]", "", text)
+    text = re.sub(r"[\s\u200c\u200d]+", " ", text).strip()
+    # A short access notice begins with the directive, followed by the access
+    # explanation. VPN mentions inside articles and forms are ordinary evidence.
+    return len(text) <= 400 and bool(
+        (PERSIAN_VPN_PROMPT.match(text) and PERSIAN_WEB_ACCESS.search(text))
+        or (ENGLISH_VPN_PROMPT.match(text) and ENGLISH_WEB_ACCESS.search(text))
+    )
 
 
 def assess_crawl_quality(
@@ -46,6 +75,9 @@ def assess_crawl_quality(
         return CrawlStatus.UNREACHABLE, 0.0, ["missing_http_status"]
     if lower_type and not any(token in lower_type for token in ("text/html", "application/xhtml", "text/plain")):
         return CrawlStatus.NON_HTML, 0.0, ["non_html_content_type"]
+
+    if ("vpn" in lower_html or "خاموش" in lower_html or "فعال" in lower_html) and _is_vpn_access_notice(html or ""):
+        return CrawlStatus.BLOCKED, 0.0, [VPN_ACCESS_RESTRICTED]
 
     marker_hits = [marker for marker in CHALLENGE_MARKERS if marker in lower_html]
     if marker_hits and (byte_count < 50_000 or ERROR_TITLE_RE.search(html or "")):
