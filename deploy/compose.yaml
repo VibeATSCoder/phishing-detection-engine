@@ -65,12 +65,12 @@ services:
         max-file: "3"
 
   detector:
-    image: phishing-detection-engine:3.9.8-integrated
+    image: phishing-detection-engine:3.9.9-integrated
     build:
       context: ..
       dockerfile: Dockerfile
       args:
-        APP_VERSION: "3.9.8"
+        APP_VERSION: "3.9.9"
     depends_on:
       review:
         condition: service_healthy
@@ -89,6 +89,7 @@ services:
       PPD_JEV_ESCALATE_THRESHOLD: ${PPD_JEV_ESCALATE_THRESHOLD:-0.20}
       PPD_JEV_MIN_CLEAR_CONFIDENCE: ${PPD_JEV_MIN_CLEAR_CONFIDENCE:-0.80}
       PPD_JEV_SHORT_CIRCUIT_LEGIT: ${PPD_JEV_SHORT_CIRCUIT_LEGIT:-0}
+      PPD_JEV_PIPELINE_EARLY_CLEAR: ${PPD_JEV_PIPELINE_EARLY_CLEAR:-1}
       PPD_JEV_LEGIT_THRESHOLD: ${PPD_JEV_LEGIT_THRESHOLD:-0.05}
       PPD_INTEL_DB: /app/var/intel.sqlite3
       PPD_REVIEW_DB: /app/var/review.sqlite3

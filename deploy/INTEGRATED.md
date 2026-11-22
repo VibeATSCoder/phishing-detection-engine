@@ -1,6 +1,6 @@
 # Minimal integrated deployment
 
-Stack 1.2.8 uses detector v3.9.8, reviewer v1.12.4, extension v3.12.4, and optional RAG v2.2.0. The component contract is recorded in [COMPATIBILITY.json](COMPATIBILITY.json).
+Stack 1.2.9 uses detector v3.9.9, reviewer v1.12.4, extension v3.12.5, and optional RAG v2.2.0. The component contract is recorded in [COMPATIBILITY.json](COMPATIBILITY.json).
 
 This bundle runs two services:
 
@@ -21,7 +21,7 @@ No checkout, no build, no `gh`. This downloads every release artefact, loads
 each image, writes one aggregated `.env`, and starts the stack:
 
 ```bash
-curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.8/install.sh | bash
+curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.9/install.sh | bash
 ```
 
 It stops and tells you what to fill in the first time, because
@@ -44,7 +44,7 @@ Run these commands from the directory containing `deploy/.env`. Use
 
 ```bash
 curl -fL --progress-bar --connect-timeout 120 --max-time 86400 \
-  -o install.sh https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.8/install.sh
+  -o install.sh https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.9/install.sh
 bash install.sh --upgrade --ask-token --full
 ```
 
@@ -99,7 +99,7 @@ stack bundle from the two releases into one directory, unpack the bundle, and
 run the script:
 
 ```bash
-tar -xzf persianphish-stack-1.2.8-deploy.tar.gz     # compose files and this guide
+tar -xzf persianphish-stack-1.2.9-deploy.tar.gz     # compose files and this guide
 cp deploy/stack.env.example deploy/.env             # then set the two keys
 bash deploy/deploy.sh
 ```
@@ -185,12 +185,13 @@ if reference retrieval is desired. A request to `POST /v1/detect` can use
 `"use_rf": false` to skip RF/TCN for that call and `"use_jev": true` to select
 the configured screener. Omit either key to use the service default.
 
-With RF/TCN enabled, a requested screen checks fast clearances before they
-reach the user. It sends high risk, low confidence, ambiguous labels and
-provider failures to review. With RF/TCN skipped, usable pages go to review
-by default. The separate `PPD_JEV_SHORT_CIRCUIT_LEGIT` option allows standalone
-low-risk clears after validation. Confirmed threat intelligence keeps priority
-and unusable crawl evidence yields `crawl_failed`.
+In an ordered pipeline, a legitimate Decision result skips every remaining
+stage when confidence is at least `0.80`, risk is at most `0.05`, and the page
+passes the observed-risk checks. Set `PPD_JEV_PIPELINE_EARLY_CLEAR=0` to disable
+this default or use the per-request Decision overrides. Legacy `use_jev` and
+`use_rf` requests keep the separate `PPD_JEV_SHORT_CIRCUIT_LEGIT` setting for
+standalone clearance. Confirmed threat intelligence keeps priority in the
+legacy flow, and unusable crawl evidence yields `crawl_failed`.
 
 Read category scores, confidence, model and status under `evidence_summary.jev`.
 The detector reports `latency_ms.total` for work through the verdict.
@@ -353,7 +354,7 @@ being down degrades reviews to the same behaviour as not running it at all.
 
 ## Manual installation and extension testing
 
-Download [install.sh](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.8/install.sh)
+Download [install.sh](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.9/install.sh)
 into your installation directory. Run it in a terminal so it can show the
 release links and check for local files.
 
@@ -365,12 +366,12 @@ Use these release assets if you are downloading on a separate computer.
 
 | Component | Assets |
 | --- | --- |
-| Detector | [Docker image and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/v3.9.8) |
-| Stack | [Deployment bundle](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.8/persianphish-stack-1.2.8-deploy.tar.gz) |
+| Detector | [Docker image and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/v3.9.9) |
+| Stack | [Deployment bundle](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.9/persianphish-stack-1.2.9-deploy.tar.gz) |
 | Reviewer | [Docker image and checksum](https://github.com/VibeATSCoder/agentic-phishing-review/releases/tag/v1.12.4) |
 | RAG | [Image parts, checksums, and loader](https://github.com/VibeATSCoder/phishing-rag-service/releases/tag/v2.2.0) |
 | Reference index | [Index parts and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/rag-index-2.0.0) |
-| Browser extension | [Chrome/Edge ZIP](https://github.com/VibeATSCoder/phishingshield-persian/releases/download/v3.12.4/phishingshield-persian-v3.12.4.zip) |
+| Browser extension | [Chrome/Edge ZIP](https://github.com/VibeATSCoder/phishingshield-persian/releases/download/v3.12.5/phishingshield-persian-v3.12.5.zip) |
 
 The installer prompts for the reviewer provider and offers a separate Decision
 model endpoint. For AvalAI Jev use base URL `https://api.avalai.ir/v1`, format
@@ -418,9 +419,10 @@ available. A blocked or unusable crawl ends the scan before inference. HTTP
 
 Enable **Override Decision model thresholds** in Extension options to set the
 risk at which the stage escalates, the minimum confidence required to clear a
-page, and the maximum risk for an early legitimate clearance. The clearance
-checkbox defaults to off. A legitimate model label, usable evidence, and
-clearance of the observed-risk checks are required even when it is on.
+page, and the maximum risk for an early legitimate clearance. New overrides
+enable clearance by default. The checkbox can require later stages even when
+confidence is high. Clearance requires a legitimate model label, usable
+evidence, and no observed risk veto.
 The Decision column shows the provider risk, confidence and routing checks.
 
 The review agent defaults to 25 seconds per model call and 55 seconds for the

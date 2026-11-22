@@ -697,7 +697,7 @@ class Detector:
     ) -> tuple[Verdict, dict[str, Any], list[str]]:
         if self.jev is not None:
             finding = await self._screen(evidence, url, features)
-            policy = thresholds or DecisionThresholds.from_config(self.config)
+            policy = thresholds or DecisionThresholds.from_config(self.config, ordered_pipeline=True)
             verdict, reasons = apply_jev(
                 Verdict.SUSPICIOUS, finding,
                 _observed_risk(features) or features["unicode_confusable_count"] > 0

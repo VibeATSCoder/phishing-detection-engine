@@ -739,6 +739,48 @@ async def test_low_confidence_with_rag_and_analyst_failures_is_reported_as_incom
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("risk,confidence,label,observed_risk,override,clears,gate", [
+    (0.05, 0.80, "legitimate", False, None, True, None),
+    (0.02, 0.96, "legitimate", False, None, True, None),
+    (0.05, 0.60, "legitimate", False, None, False, "jev_gate_confidence"),
+    (0.06, 0.95, "legitimate", False, None, False, "jev_gate_legitimate_risk"),
+    (0.01, 0.95, "suspicious", False, None, False, "jev_gate_label"),
+    (0.01, 0.95, "legitimate", True, None, False, "jev_gate_observed_risk"),
+    (0.07, 0.79, "legitimate", False, {}, True, None),
+    (0.07, 0.79, "legitimate", False, {"allow_early_clear": False}, False, "jev_gate_early_clear_disabled"),
+])
+async def test_remote_decision_short_circuits_only_when_all_clearance_checks_pass(
+    tmp_path, monkeypatch, risk, confidence, label, observed_risk, override, clears, gate,
+):
+    from unittest.mock import AsyncMock
+
+    from persianphish_detector.jev import DecisionThresholds
+
+    agent = FakeAgent(review("suspicious", 0.5, 0.41))
+    agent.retrieve_references = AsyncMock(return_value=([], []))
+    detector = make_detector(tmp_path, usable_evidence(), Verdict.SUSPICIOUS, agent)
+    detector.jev = SimpleNamespace(score=AsyncMock(return_value=JevFinding(
+        ok=True, phishing_score=risk, confidence=confidence, label=label,
+    )))
+    features = base_features()
+    if observed_risk:
+        features["external_form_action_count"] = 1
+    monkeypatch.setattr(orchestrator_module, "extract_features", lambda *_: features)
+    thresholds = None if override is None else DecisionThresholds(
+        escalation_risk=0.20, minimum_confidence=0.75, legitimate_max_risk=0.08, **override,
+    )
+    result = await detector.detect(
+        "https://suspect.example/", pipeline=("decision", "rag", "agent"), decision_thresholds=thresholds,
+    )
+    assert result.verdict == (Verdict.LEGITIMATE if clears else Verdict.SUSPICIOUS)
+    assert agent.retrieve_references.await_count == len(agent.calls) == (0 if clears else 1)
+    assert [step["status"] for step in result.evidence_summary["pipeline"]] == (
+        ["completed", "skipped", "skipped"] if clears else ["completed", "completed", "completed"]
+    )
+    assert (gate or "jev_short_circuit_legit") in result.reason_codes
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("stages", [
     ("rf",), ("decision",), ("rag",), ("agent",),
     ("decision", "rag", "rf", "agent"), ("agent", "rf", "decision", "rag"),

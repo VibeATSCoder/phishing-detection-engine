@@ -79,8 +79,9 @@ class DetectorConfig:
     jev_max_text_chars: int = 8000
     jev_escalate_threshold: float = 0.20
     jev_min_clear_confidence: float = 0.80
-    # Opt in only after validating standalone JEV clears on labeled data.
+    # Legacy use_jev/use_rf callers keep their opt-in standalone behavior.
     jev_short_circuit_legit: bool = False
+    jev_pipeline_early_clear: bool = True
     jev_legit_threshold: float = 0.05
     jev_local_model_path: Path | None = None
     jev_local_auto_flag: bool = False
@@ -155,6 +156,7 @@ class DetectorConfig:
                 "PPD_JEV_MIN_CLEAR_CONFIDENCE", 0.80, minimum=0.0, maximum=1.0
             ),
             jev_short_circuit_legit=_env_bool("PPD_JEV_SHORT_CIRCUIT_LEGIT", False),
+            jev_pipeline_early_clear=_env_bool("PPD_JEV_PIPELINE_EARLY_CLEAR", True),
             jev_legit_threshold=_env_float(
                 "PPD_JEV_LEGIT_THRESHOLD", 0.05, minimum=0.0, maximum=0.5
             ),

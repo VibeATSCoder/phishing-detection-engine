@@ -327,7 +327,7 @@ class DecisionThresholds(BaseModel):
     escalation_risk: float = Field(ge=0, le=1, strict=True)
     minimum_confidence: float = Field(ge=0, le=1, strict=True)
     legitimate_max_risk: float = Field(ge=0, le=1, strict=True)
-    allow_early_clear: bool = Field(default=False, strict=True)
+    allow_early_clear: bool = Field(default=True, strict=True)
 
     @model_validator(mode="after")
     def validate_cutoffs(self) -> "DecisionThresholds":
@@ -336,12 +336,12 @@ class DecisionThresholds(BaseModel):
         return self
 
     @classmethod
-    def from_config(cls, config: "DetectorConfig") -> "DecisionThresholds":
+    def from_config(cls, config: "DetectorConfig", *, ordered_pipeline: bool = False) -> "DecisionThresholds":
         return cls.model_construct(
             escalation_risk=config.jev_escalate_threshold,
             minimum_confidence=config.jev_min_clear_confidence,
             legitimate_max_risk=config.jev_legit_threshold,
-            allow_early_clear=config.jev_short_circuit_legit,
+            allow_early_clear=config.jev_pipeline_early_clear if ordered_pipeline else config.jev_short_circuit_legit,
         )
 
 
