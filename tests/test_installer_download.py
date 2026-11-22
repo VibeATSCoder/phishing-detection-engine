@@ -112,8 +112,8 @@ def test_private_release_resumes_partial_download(tmp_path):
 
 
 @pytest.mark.skipif(sys.platform != "linux" or not shutil.which("setsid"), reason="requires a controlling terminal")
-@pytest.mark.parametrize("configure_only", [False, True])
-def test_existing_install_can_configure_apis_with_or_without_downloads(tmp_path, configure_only):
+@pytest.mark.parametrize("configure_only,retired_route", [(False, False), (True, False), (True, True)])
+def test_existing_install_can_configure_apis_with_or_without_downloads(tmp_path, configure_only, retired_route):
     import errno
     import pty
     import termios
@@ -126,11 +126,15 @@ def test_existing_install_can_configure_apis_with_or_without_downloads(tmp_path,
         (index / name).touch()
 
     settings = deploy / ".env"
+    embedding_settings = (
+        "RAG_EMBED_MODE=api\nRAG_EMBED_API_BASE=https://api.avalai.ir/v1\nRAG_EMBED_MODEL=bge-m3\n"
+        if retired_route else "RAG_EMBED_MODE=local\n"
+    )
     settings.write_text(
         "OPENROUTER_BASE_URL=https://agent.example/v1\nOPENROUTER_MODEL=old-agent\n"
         "OPENROUTER_API_KEY=fixture-old-agent-key\nINTERNAL_REVIEW_API_KEY=fixture-internal-key\n"
         "PPD_API_KEY=fixture-browser-key\nRAG_BASE_URL=http://rag:8092\n"
-        f"RAG_INDEX_HOST_PATH={index}\nRAG_EMBED_MODE=local\n"
+        f"RAG_INDEX_HOST_PATH={index}\nREVIEW_LLM_TIMEOUT_S=15\nREVIEW_BUDGET_S=35\n" + embedding_settings
     )
     (deploy / "deploy.sh").write_text('printf "%s\\n" "$@" > deployment.args\n')
     source_deploy = INSTALLER.parent
@@ -162,12 +166,15 @@ def test_existing_install_can_configure_apis_with_or_without_downloads(tmp_path,
         ("Model ID [old-agent]: ", "agent-model"),
         ("Review agent API key (hidden): ", "fixture-agent-key"),
         ("Test the agent key with a small completion now? [y/N]: ", ""),
-        ("Embedding mode (local or api) [local]: ", "api"),
-        ("Configure RAG embeddings now? [Y/n]: ", ""),
-        ("RAG embeddings API base URL [https://api.avalai.ir/v1]: ", "https://embeddings.example/v1"),
-        ("Model ID [bge-m3]: ", "provider-bge-m3"),
-        ("RAG embeddings API key (hidden): ", "fixture-rag-key"),
+        ("Embedding mode (local or api) [local]: ", "" if retired_route else "api"),
     ])
+    if not retired_route:
+        prompts.extend([
+            ("Configure RAG embeddings now? [Y/n]: ", ""),
+            ("RAG embeddings API base URL []: ", "https://embeddings.example/v1"),
+            ("Model ID [BAAI/bge-m3]: ", "provider-bge-m3"),
+            ("RAG embeddings API key (hidden): ", "fixture-rag-key"),
+        ])
 
     terminal, slave = pty.openpty()
     try:
@@ -223,10 +230,16 @@ def test_existing_install_can_configure_apis_with_or_without_downloads(tmp_path,
     assert saved["OPENROUTER_BASE_URL"] == "https://new-agent.example/v1"
     assert saved["OPENROUTER_MODEL"] == "agent-model"
     assert saved["OPENROUTER_API_KEY"] == "fixture-agent-key"
-    assert saved["RAG_EMBED_MODE"] == "api"
-    assert saved["RAG_EMBED_API_BASE"] == "https://embeddings.example/v1"
-    assert saved["RAG_EMBED_MODEL"] == "provider-bge-m3"
-    assert saved["RAG_EMBED_API_KEY"] == "fixture-rag-key"
+    assert saved["REVIEW_LLM_TIMEOUT_S"] == "25"
+    assert saved["REVIEW_BUDGET_S"] == "55"
+    if retired_route:
+        assert b"saved AvalAI BGE-M3 model returns 404" in output
+        assert saved["RAG_EMBED_MODE"] == "local"
+    else:
+        assert saved["RAG_EMBED_MODE"] == "api"
+        assert saved["RAG_EMBED_API_BASE"] == "https://embeddings.example/v1"
+        assert saved["RAG_EMBED_MODEL"] == "provider-bge-m3"
+        assert saved["RAG_EMBED_API_KEY"] == "fixture-rag-key"
     assert saved["INTERNAL_REVIEW_API_KEY"] == "fixture-internal-key"
     assert saved["PPD_API_KEY"] == "fixture-browser-key"
     for secret in (b"fixture-decision-key", b"fixture-agent-key", b"fixture-rag-key", b"fixture-github-token"):

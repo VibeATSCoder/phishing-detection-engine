@@ -512,8 +512,10 @@ class Detector:
                     "status": "unavailable" if agent_review.provider_failed else "completed",
                     **agent_review.audit_summary(),
                 }
+                if agent_review.provider_error is not None:
+                    agent_audit["error_code"] = agent_review.provider_error
                 agent_evidence_codes = list(agent_review.evidence_codes)
-                METRICS.agent_calls.labels(outcome="completed").inc()
+                METRICS.agent_calls.labels(outcome=agent_audit["status"]).inc()
                 METRICS.agent_reconciliation.labels(
                     agent_verdict=str(agent_review.verdict_candidate),
                     final_verdict=verdict.value,
@@ -660,6 +662,9 @@ class Detector:
                     reasons.extend(agent_reasons)
                     step["status"] = "unavailable" if review.provider_failed else "completed"
                     summary["agent_review"] = {"status": step["status"], **review.audit_summary()}
+                    if review.provider_error is not None:
+                        step["error_code"] = review.provider_error
+                        summary["agent_review"]["error_code"] = review.provider_error
                     agent_codes = list(review.evidence_codes)
                     risk = review.risk_score if review.risk_score is not None else risk
             except Exception as exc:
@@ -836,6 +841,10 @@ class Detector:
         combined_score: float | None,
         evidence: CrawlEvidence,
     ) -> Tuple[Verdict, list[str]]:
+        if review.provider_failed:
+            return Verdict.SUSPICIOUS, [
+                "agent_review_unavailable", *review.reasons, *review.evidence_codes, "agent_advisory_abstained",
+            ]
         reasons = ["agent_review_completed", *review.reasons, *review.evidence_codes]
         deterministic_risk = _deterministic_risk(features, combined_score)
         # The reviewer's own concrete-support finding counts as corroboration.

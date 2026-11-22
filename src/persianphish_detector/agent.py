@@ -128,6 +128,14 @@ class AgentReview:
     def provider_failed(self) -> bool:
         return "agent_unavailable_or_invalid" in self.reasons
 
+    @property
+    def provider_error(self) -> str | None:
+        if not self.provider_failed:
+            return None
+        return next((reason for reason in self.reasons if re.fullmatch(
+            r"(?:analyst|verifier)_[a-z0-9_]{1,60}", reason
+        ) and not reason.endswith(("_legitimate", "_phishing", "_suspicious"))), "agent_unavailable_or_invalid")
+
     def audit_summary(self) -> Dict[str, Any]:
         return {
             "analysis_id": self.analysis_id,

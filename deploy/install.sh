@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One command to fetch, load and start the whole stack.
 #
-#   curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.6/install.sh | bash
+#   curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.7/install.sh | bash
 #
 # or, having downloaded it:
 #
@@ -129,8 +129,8 @@ ARTEFACT_DIRS=()
 # Versions this stack releases as. deploy/COMPATIBILITY.json records the same
 # numbers and tests/test_release_contract.py asserts the two agree, so these
 # cannot drift from the contract unnoticed.
-DETECTOR_VERSION="${DETECTOR_VERSION:-3.9.6}"
-REVIEW_VERSION="${REVIEW_VERSION:-1.12.2}"
+DETECTOR_VERSION="${DETECTOR_VERSION:-3.9.7}"
+REVIEW_VERSION="${REVIEW_VERSION:-1.12.3}"
 RAG_VERSION="${RAG_VERSION:-2.2.0}"
 # The reference *index* is data, versioned independently of the service image:
 # the 2.0.0 index works unchanged with the 2.2.0 service. It is published on the
@@ -140,9 +140,9 @@ RAG_VERSION="${RAG_VERSION:-2.2.0}"
 RAG_INDEX_VERSION="${RAG_INDEX_VERSION:-2.0.0}"
 RAG_INDEX_REPO="${RAG_INDEX_REPO:-phishing-detection-engine}"
 RAG_INDEX_TAG="${RAG_INDEX_TAG:-rag-index-${RAG_INDEX_VERSION}}"
-STACK_VERSION="${STACK_VERSION:-1.2.6}"
+STACK_VERSION="${STACK_VERSION:-1.2.7}"
 STACK_TAG="${STACK_TAG:-v${DETECTOR_VERSION}}"
-EXTENSION_VERSION="${EXTENSION_VERSION:-3.12.2}"
+EXTENSION_VERSION="${EXTENSION_VERSION:-3.12.3}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -293,6 +293,22 @@ env_value() { # key -> current value in deploy/.env
   sed -n "s/^$1=//p" "${2:-deploy/.env}" 2>/dev/null | tail -n 1
 }
 
+retired_avalai_embeddings() { # base_url model
+  [ "${1%/}" = "https://api.avalai.ir/v1" ] || return 1
+  case "$2" in bge-m3|nvidia_nim.bge-m3) return 0 ;; *) return 1 ;; esac
+}
+
+update_review_timeouts() {
+  local timeout budget
+  timeout="$(env_value REVIEW_LLM_TIMEOUT_S)"
+  budget="$(env_value REVIEW_BUDGET_S)"
+  if [ "${timeout:-15}" = "15" ] && [ "${budget:-35}" = "35" ]; then
+    set_env REVIEW_LLM_TIMEOUT_S 25
+    set_env REVIEW_BUDGET_S 55
+    say "  review timing uses 25 seconds per model call and 55 seconds total"
+  fi
+}
+
 # Optional completion check for the review agent's configured provider.
 check_openrouter() { # key base_url model -> 0 if a completion comes back
   local key="$1" base="$2" model="$3" body payload
@@ -316,7 +332,7 @@ configure_api() { # decision | agent | embeddings
       default_base="https://openrouter.ai/api/v1"; default_model="google/gemma-4-31b-it" ;;
     embeddings)
       label="RAG embeddings"; base_key=RAG_EMBED_API_BASE; model_key=RAG_EMBED_MODEL; secret_key=RAG_EMBED_API_KEY
-      default_base="https://api.avalai.ir/v1"; default_model="bge-m3" ;;
+      default_base=""; default_model="BAAI/bge-m3" ;;
   esac
   old_base="$(env_value "${base_key}")"
   old_model="$(env_value "${model_key}")"
@@ -341,6 +357,9 @@ url.port' "${base}" 2>/dev/null || die "${label} needs an HTTP(S) base URL witho
   model="$(ask "  Model ID [${old_model:-${default_model}}]: " "${old_model:-${default_model}}")" \
     || die "provider setup interrupted"
   [[ -n "${model//[[:space:]]/}" ]] || die "${label} needs a model name"
+  if [ "${kind}" = "embeddings" ] && retired_avalai_embeddings "${base}" "${model}"; then
+    die "this AvalAI BGE-M3 route is unavailable. Select local BGE-M3 or enter an active BGE-M3 endpoint."
+  fi
 
   if [ "${kind}" = "decision" ]; then
     default_format=chat_completions
@@ -386,6 +405,7 @@ url.port' "${base}" 2>/dev/null || die "${label} needs an HTTP(S) base URL witho
 }
 
 configure_provider_settings() {
+  update_review_timeouts
   configure_api decision
   configure_api agent
   [ "${WITH_REFERENCES}" -eq 1 ] || return 0
@@ -393,6 +413,10 @@ configure_provider_settings() {
   local mode current_mode
   current_mode="$(env_value RAG_EMBED_MODE)"
   current_mode="${current_mode:-local}"
+  if [ "${current_mode}" = "api" ] && retired_avalai_embeddings "$(env_value RAG_EMBED_API_BASE)" "$(env_value RAG_EMBED_MODEL)"; then
+    say "  the saved AvalAI BGE-M3 model returns 404. Local uses the same model and existing index."
+    current_mode=local
+  fi
   say ""
   say "RAG embeddings can use local BGE-M3 or your own API serving BGE-M3 (1024 dimensions)."
   mode="$(ask "  Embedding mode (local or api) [${current_mode}]: " "${current_mode}")" \
@@ -401,7 +425,10 @@ configure_provider_settings() {
     api)
       configure_api embeddings
       [[ -n "$(env_value RAG_EMBED_API_BASE)" && -n "$(env_value RAG_EMBED_MODEL)" ]] \
-        || die "API embedding mode needs a base URL and a model name" ;;
+        || die "API embedding mode needs a base URL and a model name"
+      if retired_avalai_embeddings "$(env_value RAG_EMBED_API_BASE)" "$(env_value RAG_EMBED_MODEL)"; then
+        die "the saved AvalAI BGE-M3 route is unavailable. Run provider setup and select local."
+      fi ;;
     local) ;;
     *) die "embedding mode must be local or api" ;;
   esac
@@ -1487,6 +1514,8 @@ fi
 # infrastructure settings on an upgrade, including existing shared keys.
 if [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ]; then
   configure_provider_settings
+else
+  update_review_timeouts
 fi
 
 if [ "${UPGRADE}" -eq 0 ] && [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ]; then

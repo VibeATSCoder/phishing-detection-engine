@@ -30,7 +30,7 @@ from pathlib import Path
 from .url_utils import UnsafeURL, hostname, registrable_domain
 
 
-CATALOG_VERSION = "allowlist-20260905-v3"
+CATALOG_VERSION = "allowlist-20261122-v4"
 
 
 #: Iranian services whose users are the target of the campaigns this detects.
@@ -39,7 +39,7 @@ _IRANIAN = {
     "filimo.com", "aparat.com", "namava.ir", "telewebion.com", "varzesh3.com",
     # marketplaces and classifieds
     "digikala.com", "divar.ir", "torob.com", "basalam.com", "sheypoor.com",
-    "alibaba.ir", "snapp.ir", "snappfood.ir", "snapp.market", "tapsi.ir",
+    "alibaba.ir", "snapp.ir", "snappfood.ir", "tapsi.ir",
     # exchange and payment gateways
     "shaparak.ir", "zarinpal.com", "idpay.ir", "nobitex.ir", "wallex.ir",
     "asanpardakht.ir", "behpardakht.com", "sep.ir", "irankish.com",

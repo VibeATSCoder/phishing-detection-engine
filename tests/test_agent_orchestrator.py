@@ -692,6 +692,35 @@ def test_absent_reference_matches_mean_zero_retrieved():
 
 
 @pytest.mark.asyncio
+async def test_low_confidence_with_rag_and_analyst_failures_is_reported_as_incomplete(tmp_path, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from persianphish_detector.agent import AgentServiceError
+
+    agent = FakeAgent(replace(review("suspicious", 0.5, 0.41), reasons=[
+        "agent_unavailable_or_invalid", "analyst_timeouterror", "reference_service_unavailable",
+    ]))
+    agent.retrieve_references = AsyncMock(side_effect=AgentServiceError("reference_retrieval_http_503"))
+    detector = make_detector(tmp_path, usable_evidence(), Verdict.SUSPICIOUS, agent)
+    detector.jev = SimpleNamespace(score=AsyncMock(return_value=JevFinding(
+        ok=True, phishing_score=0.06, confidence=0.62, label="legitimate",
+    )))
+    monkeypatch.setattr(orchestrator_module, "extract_features", lambda *_: base_features())
+    result = await detector.detect("https://snapp.market/", pipeline=("decision", "rag", "agent"))
+    assert result.verdict == Verdict.SUSPICIOUS
+    assert "jev_gate_confidence" in result.reason_codes
+    assert "agent_review_unavailable" in result.reason_codes
+    assert "agent_review_completed" not in result.reason_codes
+    assert result.evidence_summary["agent_review"]["error_code"] == "analyst_timeouterror"
+    steps = result.evidence_summary["pipeline"]
+    assert [(step["status"], step.get("error_code")) for step in steps] == [
+        ("completed", None),
+        ("unavailable", "reference_retrieval_http_503"),
+        ("unavailable", "analyst_timeouterror"),
+    ]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("stages", [
     ("rf",), ("decision",), ("rag",), ("agent",),
     ("decision", "rag", "rf", "agent"), ("agent", "rf", "decision", "rag"),

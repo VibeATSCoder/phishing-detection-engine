@@ -47,6 +47,11 @@ def test_a_lookalike_is_never_cleared(url: str) -> None:
     assert allowlisted_domain(url) is None, url
 
 
+def test_snapp_market_uses_the_normal_detector():
+    assert allowlisted_domain("https://snapp.market/") is None
+    assert allowlisted_domain("https://www.snapp.market/") is None
+
+
 # ------------------------------------------------------------ must match ---
 
 @pytest.mark.parametrize(
