@@ -7,6 +7,7 @@ cover the parts that broke in ways nothing else would have caught.
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -21,6 +22,38 @@ SOURCE = INSTALLER.read_text(encoding="utf-8")
 
 def test_installer_is_valid_bash() -> None:
     subprocess.run(["bash", "-n", str(INSTALLER)], check=True)
+
+
+def test_deploy_uses_release_tags_and_prints_the_public_origin(tmp_path, monkeypatch) -> None:
+    script = tmp_path / "deploy.sh"
+    script.write_bytes((ROOT / "deploy" / "deploy.sh").read_bytes())
+    (tmp_path / ".env").write_text(
+        "OPENROUTER_API_KEY=test-key\nINTERNAL_REVIEW_API_KEY=test-review-key\n"
+        "DETECTOR_VERSION=3.9.2\nREVIEW_VERSION=1.12.0\nCADDY_DOMAIN=detector.example.org\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("CADDY_DOMAIN", raising=False)
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    docker = tmp_path / "docker"
+    docker.write_text(
+        '#!/bin/bash\n'
+        'case "$*" in\n'
+        '  *" up -d "*) printf "%s %s\\n" "$DETECTOR_VERSION" "$REVIEW_VERSION" >> selected-tags;;\n'
+        '  *" ps -a -q "*) echo fixture;;\n'
+        '  "inspect --format="*) echo "running healthy";;\n'
+        'esac\n',
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+
+    result = subprocess.run(
+        ["bash", str(script), "--health-timeout", "2"],
+        capture_output=True, text=True, check=True,
+    )
+    pins = re.findall(r'^readonly (?:DETECTOR_VERSION|REVIEW_VERSION)="([^"]+)"',
+                      script.read_text(encoding="utf-8"), re.MULTILINE)
+    assert (tmp_path / "selected-tags").read_text().splitlines() == [" ".join(pins)] * 2
+    assert "Backend URL   https://detector.example.org" in result.stdout
 
 
 def test_git_credential_lookup_can_never_prompt() -> None:

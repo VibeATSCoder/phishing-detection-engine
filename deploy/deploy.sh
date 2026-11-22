@@ -21,8 +21,11 @@
 # Required in .env: OPENROUTER_API_KEY and INTERNAL_REVIEW_API_KEY.
 set -euo pipefail
 
-readonly DETECTOR_VERSION="3.9.5"
-readonly REVIEW_VERSION="1.12.1"
+readonly DETECTOR_VERSION="3.9.6"
+readonly REVIEW_VERSION="1.12.2"
+# Compose interpolates tags from its environment. Use the same tags that this
+# script checks and loads even if an older installation saved version pins.
+export DETECTOR_VERSION REVIEW_VERSION
 # Overridable from .env, so --with-references matches the image you loaded.
 RAG_VERSION="2.2.0"
 readonly DETECTOR_IMAGE="phishing-detection-engine:${DETECTOR_VERSION}"
@@ -134,6 +137,28 @@ print_access_block() {
   fi
 }
 
+print_extension_config() {
+  local host port domain key
+  host="$(resolve_bind_host)"
+  port="$(env_val PPD_HOST_PORT)"; port="${port:-8088}"
+  domain="${CADDY_DOMAIN:-$(env_val CADDY_DOMAIN)}"
+  key="$(env_val PPD_API_KEY)"
+  echo "Browser extension — open its options page and set:"
+  if [[ "${domain}" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ ]]; then
+    echo "  Backend URL   https://${domain}"
+  else
+    echo "  Backend URL   http://${host}:${port}"
+    if ! detector_is_exposed; then
+      echo "  This URL is local to the server. On another computer, enter your HTTPS reverse-proxy origin."
+    fi
+  fi
+  if [ -z "${key//[[:space:]]/}" ]; then
+    echo "  API key       (leave empty — this detector requires none)"
+  else
+    echo "  API key       ${key}"
+  fi
+}
+
 # Ready-to-run example requests with the configured port and key filled in.
 # They use 127.0.0.1 on purpose: the operator runs them on the server right
 # after install, and a host cannot reach its own public IP (NAT hairpin), so a
@@ -172,20 +197,11 @@ print_sample_curls() {
 if [ "${SHOW_CONFIG}" -eq 1 ]; then
   cd "${SCRIPT_DIR}"
   [ -f .env ] || { echo "no deploy/.env here; run the installer first" >&2; exit 1; }
-  ppd_key="$(env_val PPD_API_KEY)"
-  ppd_host="$(resolve_bind_host)"
-  ppd_port="$(env_val PPD_HOST_PORT)"; ppd_port="${ppd_port:-8088}"
   print_access_block
   echo
   print_sample_curls
   echo
-  echo "Browser extension — open its options page and set:"
-  echo "  Backend URL   http://${ppd_host}:${ppd_port}"
-  if [ -z "${ppd_key//[[:space:]]/}" ]; then
-    echo "  API key       (leave empty — this detector requires none)"
-  else
-    echo "  API key       ${ppd_key}"
-  fi
+  print_extension_config
   exit 0
 fi
 
@@ -352,10 +368,6 @@ docker compose --env-file .env "${COMPOSE[@]}" up -d --no-deps detector
 wait_healthy detector
 [ "${WITH_REFERENCES}" -eq 1 ] && wait_healthy rag
 
-detector_port="$(env_val PPD_HOST_PORT)"; detector_port="${detector_port:-8088}"
-review_port="$(env_val REVIEW_HOST_PORT)"; review_port="${review_port:-8090}"
-detector_host="$(resolve_bind_host)"
-
 echo
 docker compose --env-file .env "${COMPOSE[@]}" ps
 echo
@@ -364,15 +376,8 @@ print_access_block
 # between a running stack and a usable one: the key is generated or left empty
 # during the install, and an operator who did not write it down at the time had
 # no way to find out which, or what it was.
-ppd_key="$(env_val PPD_API_KEY)"
 echo
-echo "Browser extension — open its options page and set:"
-echo "  Backend URL   http://${detector_host}:${detector_port}"
-if [ -z "${ppd_key//[[:space:]]/}" ]; then
-  echo "  API key       (leave empty — this detector requires none)"
-else
-  echo "  API key       ${ppd_key}"
-fi
+print_extension_config
 echo
 print_sample_curls
 echo
