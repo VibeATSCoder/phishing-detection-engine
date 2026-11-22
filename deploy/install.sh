@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One command to fetch, load and start the whole stack.
 #
-#   curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.9/install.sh | bash
+#   curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.9/install-rag-check.sh | bash
 #
 # or, having downloaded it:
 #
@@ -293,11 +293,6 @@ env_value() { # key -> current value in deploy/.env
   sed -n "s/^$1=//p" "${2:-deploy/.env}" 2>/dev/null | tail -n 1
 }
 
-retired_avalai_embeddings() { # base_url model
-  [ "${1%/}" = "https://api.avalai.ir/v1" ] || return 1
-  case "$2" in bge-m3|nvidia_nim.bge-m3) return 0 ;; *) return 1 ;; esac
-}
-
 update_review_timeouts() {
   local timeout budget
   timeout="$(env_value REVIEW_LLM_TIMEOUT_S)"
@@ -318,6 +313,42 @@ check_openrouter() { # key base_url model -> 0 if a completion comes back
       -d "${payload}" \
     2>/dev/null)" || return 1
   printf '%s' "${body}" | grep -q '"choices"'
+}
+
+check_rag_embeddings() { # key base_url model
+  local key="$1" base="$2" model="$3" response status payload
+  if [[ -z "${base}" || -z "${model}" ]]; then
+    say "  API embedding mode needs a base URL and a model name."
+    return 1
+  fi
+  payload="$(python3 -c 'import json, sys; print(json.dumps({"model":sys.argv[1], "input":["reference health check"]}))' "${model}")"
+  if ! response="$(curl --silent --proto '=http,https' --connect-timeout 8 --max-time 35 --max-filesize 1048576 \
+    --write-out $'\n%{http_code}' --header 'Content-Type: application/json' \
+    --header @<(if [ -n "${key}" ]; then printf 'Authorization: Bearer %s\n' "${key}"; fi) \
+    --data "${payload}" -- "${base%/}/embeddings" 2>/dev/null)"; then
+    say "  Could not contact the embedding provider or read its response."
+    return 1
+  fi
+  status="${response##*$'\n'}"
+  if [ "${status}" != 200 ]; then
+    say "  Embedding probe failed (HTTP ${status})."
+    return 1
+  fi
+  if ! printf '%s' "${response%$'\n'*}" | python3 -c '
+import json, math, sys
+try:
+    vector = json.load(sys.stdin)["data"][0]["embedding"]
+    valid = (isinstance(vector, list) and len(vector) == 1024
+             and all(type(x) in (float, int) and math.isfinite(x) for x in vector)
+             and any(vector))
+except (ValueError, KeyError, IndexError, TypeError, OverflowError):
+    valid = False
+raise SystemExit(0 if valid else 1)
+'; then
+    say "  Embedding probe did not return a usable 1024-dimensional vector."
+    return 1
+  fi
+  say "  Embedding probe returned a usable 1024-dimensional vector."
 }
 
 configure_api() { # decision | agent | embeddings
@@ -345,7 +376,15 @@ configure_api() { # decision | agent | embeddings
   else
     reply="$(ask "  Configure ${label} now? [Y/n]: " y)" || die "provider setup interrupted"
   fi
-  case "${reply}" in y|Y|yes|YES) ;; *) return 0 ;; esac
+  case "${reply}" in
+    y|Y|yes|YES) ;;
+    *)
+      if [ "${kind}" = "embeddings" ]; then
+        check_rag_embeddings "${old_key}" "${old_base}" "${old_model}" || return 1
+        unset "${base_key}" "${model_key}" "${secret_key}"
+      fi
+      return 0 ;;
+  esac
 
   base="$(ask "  ${label} API base URL [${old_base:-${default_base}}]: " "${old_base:-${default_base}}")" \
     || die "provider setup interrupted"
@@ -357,10 +396,6 @@ url.port' "${base}" 2>/dev/null || die "${label} needs an HTTP(S) base URL witho
   model="$(ask "  Model ID [${old_model:-${default_model}}]: " "${old_model:-${default_model}}")" \
     || die "provider setup interrupted"
   [[ -n "${model//[[:space:]]/}" ]] || die "${label} needs a model name"
-  if [ "${kind}" = "embeddings" ] && retired_avalai_embeddings "${base}" "${model}"; then
-    die "this AvalAI BGE-M3 route is unavailable. Select local BGE-M3 or enter an active BGE-M3 endpoint."
-  fi
-
   if [ "${kind}" = "decision" ]; then
     default_format=chat_completions
     case "${base}" in https://api.avalai.ir|https://api.avalai.ir/*) default_format=decisions ;; esac
@@ -379,6 +414,9 @@ url.port' "${base}" 2>/dev/null || die "${label} needs an HTTP(S) base URL witho
   else
     key="$(ask_secret "  ${label} API key (hidden): ")" || die "provider setup interrupted"
   fi
+  if [ "${kind}" = "embeddings" ]; then
+    check_rag_embeddings "${key}" "${base}" "${model}" || return 1
+  fi
   if [ "${kind}" = "agent" ]; then
     [ -n "${key}" ] || die "the review agent needs an API key"
     reply="$(ask '  Test the agent key with a small completion now? [y/N]: ' n)" || die "provider setup interrupted"
@@ -391,9 +429,9 @@ url.port' "${base}" 2>/dev/null || die "${label} needs an HTTP(S) base URL witho
         fi ;;
     esac
   fi
-  set_env "${base_key}" "${base%/}"
-  set_env "${model_key}" "${model}"
-  set_env "${secret_key}" "${key}"
+  set_env "${base_key}" "${base%/}" || die "could not save the provider base URL"
+  set_env "${model_key}" "${model}" || die "could not save the provider model"
+  set_env "${secret_key}" "${key}" || die "could not save the provider key"
   # Compose resolves exported values before --env-file. Apply the choices
   # made here even when the shell had exported stale provider settings.
   unset "${base_key}" "${model_key}" "${secret_key}"
@@ -410,25 +448,25 @@ configure_provider_settings() {
   configure_api agent
   [ "${WITH_REFERENCES}" -eq 1 ] || return 0
 
-  local mode current_mode
+  local mode current_mode reply
   current_mode="$(env_value RAG_EMBED_MODE)"
   current_mode="${current_mode:-local}"
-  if [ "${current_mode}" = "api" ] && retired_avalai_embeddings "$(env_value RAG_EMBED_API_BASE)" "$(env_value RAG_EMBED_MODEL)"; then
-    say "  the saved AvalAI BGE-M3 model returns 404. Local uses the same model and existing index."
-    current_mode=local
-  fi
   say ""
   say "RAG embeddings can use local BGE-M3 or your own API serving BGE-M3 (1024 dimensions)."
   mode="$(ask "  Embedding mode (local or api) [${current_mode}]: " "${current_mode}")" \
     || die "provider setup interrupted"
   case "${mode}" in
     api)
-      configure_api embeddings
-      [[ -n "$(env_value RAG_EMBED_API_BASE)" && -n "$(env_value RAG_EMBED_MODEL)" ]] \
-        || die "API embedding mode needs a base URL and a model name"
-      if retired_avalai_embeddings "$(env_value RAG_EMBED_API_BASE)" "$(env_value RAG_EMBED_MODEL)"; then
-        die "the saved AvalAI BGE-M3 route is unavailable. Run provider setup and select local."
-      fi ;;
+      while ! configure_api embeddings; do
+        reply="$(ask '  Retry with another API, use local BGE-M3, or stop? [api/local/stop]: ' stop)" \
+          || die "provider setup interrupted"
+        case "${reply}" in
+          api) ;;
+          local) mode=local; break ;;
+          stop) die "embedding probe failed. Run provider setup with a working BGE-M3 endpoint or select local." ;;
+          *) die "choose api, local, or stop" ;;
+        esac
+      done ;;
     local) ;;
     *) die "embedding mode must be local or api" ;;
   esac
@@ -1516,6 +1554,12 @@ if [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ]; then
   configure_provider_settings
 else
   update_review_timeouts
+  if [ "${DOWNLOAD_ONLY}" -eq 0 ] && [ "${WITH_REFERENCES}" -eq 1 ] \
+    && [ "${RAG_EMBED_MODE-$(env_value RAG_EMBED_MODE)}" = "api" ]; then
+    check_rag_embeddings "${RAG_EMBED_API_KEY-$(env_value RAG_EMBED_API_KEY)}" \
+      "${RAG_EMBED_API_BASE-$(env_value RAG_EMBED_API_BASE)}" "${RAG_EMBED_MODEL-$(env_value RAG_EMBED_MODEL)}" \
+      || die "embedding probe failed. Run --configure-providers --full to choose local BGE-M3 or set a working endpoint."
+  fi
 fi
 
 if [ "${UPGRADE}" -eq 0 ] && [ "${HAVE_TTY}" -eq 1 ] && [ "${NO_PROMPT:-0}" != "1" ]; then

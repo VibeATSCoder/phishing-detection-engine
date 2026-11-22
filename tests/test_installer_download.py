@@ -112,8 +112,8 @@ def test_private_release_resumes_partial_download(tmp_path):
 
 
 @pytest.mark.skipif(sys.platform != "linux" or not shutil.which("setsid"), reason="requires a controlling terminal")
-@pytest.mark.parametrize("configure_only,retired_route", [(False, False), (True, False), (True, True)])
-def test_existing_install_can_configure_apis_with_or_without_downloads(tmp_path, configure_only, retired_route):
+@pytest.mark.parametrize("configure_only,embedding_failure", [(False, None), (True, None), (True, "404"), (True, "dimensions")])
+def test_existing_install_can_configure_apis_with_or_without_downloads(tmp_path, configure_only, embedding_failure):
     import errno
     import pty
     import termios
@@ -127,8 +127,8 @@ def test_existing_install_can_configure_apis_with_or_without_downloads(tmp_path,
 
     settings = deploy / ".env"
     embedding_settings = (
-        "RAG_EMBED_MODE=api\nRAG_EMBED_API_BASE=https://api.avalai.ir/v1\nRAG_EMBED_MODEL=bge-m3\n"
-        if retired_route else "RAG_EMBED_MODE=local\n"
+        "RAG_EMBED_MODE=api\nRAG_EMBED_API_BASE=https://api.avalai.ir/v1\nRAG_EMBED_MODEL=libertai/bge-m3\n"
+        if embedding_failure else "RAG_EMBED_MODE=local\n"
     )
     settings.write_text(
         "OPENROUTER_BASE_URL=https://agent.example/v1\nOPENROUTER_MODEL=old-agent\n"
@@ -144,7 +144,21 @@ def test_existing_install_can_configure_apis_with_or_without_downloads(tmp_path,
     mock_bin = tmp_path / "bin"
     mock_bin.mkdir()
     commands = {
-        "curl": "touch unexpected-network-request; exit 22",
+        "curl": """for arg do
+    case "$arg" in
+      https://api.avalai.ir/v1/embeddings)
+        if [ "$FIXTURE_EMBEDDING_FAILURE" = 404 ]; then
+          printf '{"error":{"message":"provider body stays private"}}\\n404'
+        else
+          printf '{"data":[{"embedding":[1]}]}\\n200'
+        fi
+        exit 0 ;;
+      https://embeddings.example/v1/embeddings)
+        python3 -c 'import json; print(json.dumps({"data":[{"embedding":[0.5]*1024}]})); print(200)'
+        exit 0 ;;
+    esac
+done
+touch unexpected-network-request; exit 22""",
         "docker": "exit 0",
         "df": "printf 'Available\\n128G\\n'",
     }
@@ -166,10 +180,16 @@ def test_existing_install_can_configure_apis_with_or_without_downloads(tmp_path,
         ("Model ID [old-agent]: ", "agent-model"),
         ("Review agent API key (hidden): ", "fixture-agent-key"),
         ("Test the agent key with a small completion now? [y/N]: ", ""),
-        ("Embedding mode (local or api) [local]: ", "" if retired_route else "api"),
     ])
-    if not retired_route:
+    if embedding_failure:
         prompts.extend([
+            ("Embedding mode (local or api) [api]: ", ""),
+            ("Change the existing RAG embeddings settings? [y/N]: ", ""),
+            ("Retry with another API, use local BGE-M3, or stop? [api/local/stop]: ", "local"),
+        ])
+    else:
+        prompts.extend([
+            ("Embedding mode (local or api) [local]: ", "api"),
             ("Configure RAG embeddings now? [Y/n]: ", ""),
             ("RAG embeddings API base URL []: ", "https://embeddings.example/v1"),
             ("Model ID [BAAI/bge-m3]: ", "provider-bge-m3"),
@@ -182,6 +202,7 @@ def test_existing_install_can_configure_apis_with_or_without_downloads(tmp_path,
             ["setsid", "--ctty", "bash", str(INSTALLER), *args],
             stdin=slave, stdout=slave, stderr=slave, cwd=tmp_path, env=os.environ | {
             "PATH": f"{mock_bin}:{os.environ['PATH']}", "NO_PROMPT": "0",
+            "FIXTURE_EMBEDDING_FAILURE": embedding_failure or "",
             },
         )
     finally:
@@ -232,8 +253,10 @@ def test_existing_install_can_configure_apis_with_or_without_downloads(tmp_path,
     assert saved["OPENROUTER_API_KEY"] == "fixture-agent-key"
     assert saved["REVIEW_LLM_TIMEOUT_S"] == "25"
     assert saved["REVIEW_BUDGET_S"] == "55"
-    if retired_route:
-        assert b"saved AvalAI BGE-M3 model returns 404" in output
+    if embedding_failure:
+        expected = b"Embedding probe failed (HTTP 404)" if embedding_failure == "404" else b"did not return a usable 1024-dimensional vector"
+        assert expected in output
+        assert b"provider body stays private" not in output
         assert saved["RAG_EMBED_MODE"] == "local"
     else:
         assert saved["RAG_EMBED_MODE"] == "api"

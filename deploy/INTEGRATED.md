@@ -21,7 +21,7 @@ No checkout, no build, no `gh`. This downloads every release artefact, loads
 each image, writes one aggregated `.env`, and starts the stack:
 
 ```bash
-curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.9/install.sh | bash
+curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.9/install-rag-check.sh | bash
 ```
 
 It stops and tells you what to fill in the first time, because
@@ -44,7 +44,7 @@ Run these commands from the directory containing `deploy/.env`. Use
 
 ```bash
 curl -fL --progress-bar --connect-timeout 120 --max-time 86400 \
-  -o install.sh https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.9/install.sh
+  -o install.sh https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.9/install-rag-check.sh
 bash install.sh --upgrade --ask-token --full
 ```
 
@@ -354,7 +354,7 @@ being down degrades reviews to the same behaviour as not running it at all.
 
 ## Manual installation and extension testing
 
-Download [install.sh](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.9/install.sh)
+Download [install-rag-check.sh](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.9/install-rag-check.sh)
 into your installation directory. Run it in a terminal so it can show the
 release links and check for local files.
 
@@ -431,10 +431,13 @@ from `deploy/.env`. Upgrading updates the old 15/35-second default pair.
 A timed-out model call ends that pass and leaves the page under suspicion.
 The diagnostics show the failing pass.
 
-If AvalAI returns `model_deprecated` or `resource_not_found` for the saved
-BGE-M3 embedding model, run `bash install.sh --configure-providers --full`
-and select `local`. The RAG image includes BGE-M3 for the existing index.
-Use an active BGE-M3 endpoint if the host cannot run the local encoder.
+The installer checks any selected embedding endpoint with a synthetic query
+before restarting the services. It shows HTTP failures and checks that the
+response contains a usable 1024-dimensional vector. Choose the same BGE-M3
+model as the index. If the probe fails, interactive setup can retry with a
+new API, switch to local BGE-M3, or exit before restarting the services.
+On an installed stack, repeat provider setup with
+`bash install.sh --configure-providers --full`.
 
 A full deployment runs a real reference lookup from the reviewer container
 after RAG reports ready. Run `bash deploy/deploy.sh --check-retrieval` from the
