@@ -12,6 +12,7 @@
 #   deploy.sh --verify             check artefact checksums before loading
 #   deploy.sh --health-timeout 1800  seconds per service startup
 #   deploy.sh --show-config        print the extension settings and exit
+#   deploy.sh --check-retrieval    test a RAG lookup from the running reviewer
 #
 # Checksums are not verified by default. A mismatch used to abort the deploy,
 # which turned a mangled .sha256 text file into a hard stop even when the image
@@ -21,8 +22,8 @@
 # Required in .env: OPENROUTER_API_KEY and INTERNAL_REVIEW_API_KEY.
 set -euo pipefail
 
-readonly DETECTOR_VERSION="3.9.7"
-readonly REVIEW_VERSION="1.12.3"
+readonly DETECTOR_VERSION="3.9.8"
+readonly REVIEW_VERSION="1.12.4"
 # Compose interpolates tags from its environment. Use the same tags that this
 # script checks and loads even if an older installation saved version pins.
 export DETECTOR_VERSION REVIEW_VERSION
@@ -40,6 +41,7 @@ IMAGE_DIR=""
 WITH_REFERENCES=0
 VERIFY_CHECKSUMS=0
 SHOW_CONFIG=0
+CHECK_RETRIEVAL=0
 HEALTH_TIMEOUT=1800
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -47,6 +49,7 @@ while [ $# -gt 0 ]; do
     --with-references|--full) WITH_REFERENCES=1; shift ;;
     --verify) VERIFY_CHECKSUMS=1; shift ;;
     --show-config) SHOW_CONFIG=1; shift ;;
+    --check-retrieval) CHECK_RETRIEVAL=1; shift ;;
     --health-timeout) HEALTH_TIMEOUT="${2:?--health-timeout needs seconds}"; shift 2 ;;
     -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *)
@@ -90,6 +93,42 @@ fi
 
 # Read one KEY=value from the .env in the current directory.
 env_val() { sed -n "s/^$1=//p" .env | tail -n 1; }
+
+check_retrieval() {
+  docker compose --env-file .env -f compose.images.yaml exec -T review python - <<'PY'
+import asyncio
+import os
+
+from agentic_phishing_review.reference_source import RagSettings, ReferenceLookupError, ReferenceSource
+
+async def check():
+    base_url = os.getenv("RAG_BASE_URL", "").strip()
+    if not base_url:
+        print("RAG lookup failed: reference_service_unconfigured")
+        return 1
+    source = ReferenceSource(RagSettings(
+        base_url=base_url, api_key=os.getenv("RAG_API_KEY", ""),
+        timeout_s=float(os.getenv("RAG_TIMEOUT_S", "30")), top_k=1,
+    ))
+    try:
+        matches = await source.fetch_result("فروشگاه آنلاین و خرید محصولات")
+    except ReferenceLookupError as exc:
+        print(f"RAG lookup failed: {exc}")
+        return 1
+    finally:
+        await source.close()
+    print(f"RAG lookup completed ({len(matches)} references)")
+    return 0
+
+raise SystemExit(asyncio.run(check()))
+PY
+}
+
+if [ "${CHECK_RETRIEVAL}" -eq 1 ]; then
+  cd "${SCRIPT_DIR}"
+  check_retrieval
+  exit 0
+fi
 
 # The address to put in a URL for whatever BIND_HOST selected. For 0.0.0.0 it
 # resolves the host's primary outbound IP -- the address other machines use to
@@ -313,15 +352,21 @@ if [ "${WITH_REFERENCES}" -eq 1 ]; then
   # --full brought up a healthy retrieval service that nothing ever called:
   # /ready reported reference_service_configured false while the container sat
   # there answering queries for no one. Caught in a clean-container install.
-  if ! grep -q '^RAG_BASE_URL=..*' .env; then
+  rag_base="${RAG_BASE_URL:-$(env_val RAG_BASE_URL)}"
+  rag_base="${rag_base//\"/}"
+  rag_base="${rag_base//\'/}"
+  case "${rag_base%/}" in
+    ''|http://localhost:8092|http://127.0.0.1:8092|'http://[::1]:8092')
     if grep -q '^RAG_BASE_URL=' .env; then
       sed -i.bak 's|^RAG_BASE_URL=.*|RAG_BASE_URL=http://rag:8092|' .env
       rm -f .env.bak
     else
       printf '\nRAG_BASE_URL=http://rag:8092\n' >> .env
     fi
+    export RAG_BASE_URL=http://rag:8092
     echo "pointed the reviewer at the retrieval service"
-  fi
+    ;;
+  esac
   COMPOSE+=(-f compose.references.yaml)
   echo "reference retrieval enabled"
 fi
@@ -366,7 +411,10 @@ docker compose --env-file .env "${COMPOSE[@]}" up -d --no-deps "${initial_servic
 wait_healthy review
 docker compose --env-file .env "${COMPOSE[@]}" up -d --no-deps detector
 wait_healthy detector
-[ "${WITH_REFERENCES}" -eq 1 ] && wait_healthy rag
+if [ "${WITH_REFERENCES}" -eq 1 ]; then
+  wait_healthy rag
+  check_retrieval
+fi
 
 echo
 docker compose --env-file .env "${COMPOSE[@]}" ps

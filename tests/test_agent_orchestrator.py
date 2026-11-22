@@ -692,6 +692,24 @@ def test_absent_reference_matches_mean_zero_retrieved():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("detail,expected", [
+    ("reference_service_http_500", "reference_service_http_500"),
+    ("reference_service_timeout", "reference_service_timeout"),
+    ("arbitrary provider text", "reference_retrieval_http_503"),
+])
+async def test_detector_preserves_only_safe_reference_failure_codes(detail, expected):
+    client = AgentClient("https://review.example")
+    client._client = httpx.AsyncClient(base_url="https://review.example", transport=httpx.MockTransport(
+        lambda _: httpx.Response(503, json={"detail": detail}),
+    ))
+    try:
+        with pytest.raises(AgentServiceError, match=rf"^{expected}$"):
+            await client.retrieve_references(suspect_url="https://suspect.example/", suspect_html="<p>fixture</p>")
+    finally:
+        await client.close()
+
+
+@pytest.mark.asyncio
 async def test_low_confidence_with_rag_and_analyst_failures_is_reported_as_incomplete(tmp_path, monkeypatch):
     from unittest.mock import AsyncMock
 

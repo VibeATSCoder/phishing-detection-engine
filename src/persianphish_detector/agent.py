@@ -423,6 +423,15 @@ class AgentClient:
         )
         self._check_response_size(response)
         if response.status_code != 200:
+            if response.status_code == 503:
+                try:
+                    detail = self._json_object(response).get("detail")
+                except AgentServiceError:
+                    detail = None
+                if isinstance(detail, str) and re.fullmatch(
+                    r"reference_(?:service_(?:unconfigured|timeout|unreachable|invalid_response|http_[1-5][0-9]{2})|evidence_unusable)", detail
+                ):
+                    raise AgentServiceError(detail)
             raise AgentServiceError(f"reference_retrieval_http_{response.status_code}")
         result = self._json_object(response)
         references = result.get("references")

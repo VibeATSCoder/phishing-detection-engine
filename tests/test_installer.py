@@ -56,6 +56,28 @@ def test_deploy_uses_release_tags_and_prints_the_public_origin(tmp_path, monkeyp
     assert "Backend URL   https://detector.example.org" in result.stdout
 
 
+def test_retrieval_check_runs_in_reviewer_and_propagates_failure(tmp_path, monkeypatch):
+    script = tmp_path / "deploy.sh"
+    script.write_bytes((ROOT / "deploy" / "deploy.sh").read_bytes())
+    monkeypatch.setenv("PATH", f"{tmp_path}{os.pathsep}{os.environ['PATH']}")
+    docker = tmp_path / "docker"
+    docker.write_text(
+        '#!/bin/sh\n'
+        'printf "%s\\n" "$*"\n'
+        'cat > probe.py\n'
+        'echo "RAG lookup failed: reference_service_http_500"\n'
+        'exit 1\n',
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+
+    result = subprocess.run(["bash", str(script), "--check-retrieval"], capture_output=True, text=True)
+    assert result.returncode == 1
+    assert "exec -T review python -" in result.stdout
+    assert "reference_service_http_500" in result.stdout
+    assert "source.fetch_result(" in (tmp_path / "probe.py").read_text(encoding="utf-8")
+
+
 def test_git_credential_lookup_can_never_prompt() -> None:
     """Token discovery must not ask the operator anything.
 

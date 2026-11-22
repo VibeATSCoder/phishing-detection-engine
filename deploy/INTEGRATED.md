@@ -1,6 +1,6 @@
 # Minimal integrated deployment
 
-Stack 1.2.7 uses detector v3.9.7, reviewer v1.12.3, extension v3.12.3, and optional RAG v2.2.0. The component contract is recorded in [COMPATIBILITY.json](COMPATIBILITY.json).
+Stack 1.2.8 uses detector v3.9.8, reviewer v1.12.4, extension v3.12.4, and optional RAG v2.2.0. The component contract is recorded in [COMPATIBILITY.json](COMPATIBILITY.json).
 
 This bundle runs two services:
 
@@ -21,7 +21,7 @@ No checkout, no build, no `gh`. This downloads every release artefact, loads
 each image, writes one aggregated `.env`, and starts the stack:
 
 ```bash
-curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.7/install.sh | bash
+curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.8/install.sh | bash
 ```
 
 It stops and tells you what to fill in the first time, because
@@ -44,7 +44,7 @@ Run these commands from the directory containing `deploy/.env`. Use
 
 ```bash
 curl -fL --progress-bar --connect-timeout 120 --max-time 86400 \
-  -o install.sh https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.7/install.sh
+  -o install.sh https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.8/install.sh
 bash install.sh --upgrade --ask-token --full
 ```
 
@@ -99,7 +99,7 @@ stack bundle from the two releases into one directory, unpack the bundle, and
 run the script:
 
 ```bash
-tar -xzf persianphish-stack-1.2.7-deploy.tar.gz     # compose files and this guide
+tar -xzf persianphish-stack-1.2.8-deploy.tar.gz     # compose files and this guide
 cp deploy/stack.env.example deploy/.env             # then set the two keys
 bash deploy/deploy.sh
 ```
@@ -353,7 +353,7 @@ being down degrades reviews to the same behaviour as not running it at all.
 
 ## Manual installation and extension testing
 
-Download [install.sh](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.7/install.sh)
+Download [install.sh](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.8/install.sh)
 into your installation directory. Run it in a terminal so it can show the
 release links and check for local files.
 
@@ -365,12 +365,12 @@ Use these release assets if you are downloading on a separate computer.
 
 | Component | Assets |
 | --- | --- |
-| Detector | [Docker image and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/v3.9.7) |
-| Stack | [Deployment bundle](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.7/persianphish-stack-1.2.7-deploy.tar.gz) |
-| Reviewer | [Docker image and checksum](https://github.com/VibeATSCoder/agentic-phishing-review/releases/tag/v1.12.3) |
+| Detector | [Docker image and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/v3.9.8) |
+| Stack | [Deployment bundle](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.8/persianphish-stack-1.2.8-deploy.tar.gz) |
+| Reviewer | [Docker image and checksum](https://github.com/VibeATSCoder/agentic-phishing-review/releases/tag/v1.12.4) |
 | RAG | [Image parts, checksums, and loader](https://github.com/VibeATSCoder/phishing-rag-service/releases/tag/v2.2.0) |
 | Reference index | [Index parts and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/rag-index-2.0.0) |
-| Browser extension | [Chrome/Edge ZIP](https://github.com/VibeATSCoder/phishingshield-persian/releases/download/v3.12.3/phishingshield-persian-v3.12.3.zip) |
+| Browser extension | [Chrome/Edge ZIP](https://github.com/VibeATSCoder/phishingshield-persian/releases/download/v3.12.4/phishingshield-persian-v3.12.4.zip) |
 
 The installer prompts for the reviewer provider and offers a separate Decision
 model endpoint. For AvalAI Jev use base URL `https://api.avalai.ir/v1`, format
@@ -433,3 +433,15 @@ If AvalAI returns `model_deprecated` or `resource_not_found` for the saved
 BGE-M3 embedding model, run `bash install.sh --configure-providers --full`
 and select `local`. The RAG image includes BGE-M3 for the existing index.
 Use an active BGE-M3 endpoint if the host cannot run the local encoder.
+
+A full deployment runs a real reference lookup from the reviewer container
+after RAG reports ready. Run `bash deploy/deploy.sh --check-retrieval` from the
+installation directory to repeat it. A completed lookup can return zero
+matches. HTTP 500 from RAG means the service reached its lookup handler and
+failed during the request. The detector carries the upstream status into the
+extension diagnostics.
+
+The AvalAI `gemma-4-31b-it` reviewer uses the provider's JSON Schema response
+format with thinking disabled for the bounded analyst and verifier outputs.
+An exhausted output budget is reported as `analyst_output_token_limit` or
+`verifier_output_token_limit`.
