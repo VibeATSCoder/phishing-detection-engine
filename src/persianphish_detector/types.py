@@ -14,6 +14,7 @@ class Verdict(str, Enum):
 
 class CrawlStatus(str, Enum):
     OK = "ok"
+    SKIPPED = "skipped"
     PARTIAL = "partial"
     BLOCKED = "blocked"
     HTTP_ERROR = "http_error"

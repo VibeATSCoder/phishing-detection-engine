@@ -85,6 +85,11 @@ class DetectorConfig:
     jev_legit_threshold: float = 0.05
     jev_local_model_path: Path | None = None
     jev_local_auto_flag: bool = False
+    trusted_urls_enabled: bool = True
+    trusted_url_ttl_s: int = 3600
+    trusted_rag_url_ttl_s: int = 86400
+    trusted_url_min_confidence: float = 0.90
+    trusted_url_max_risk: float = 0.03
 
     def __post_init__(self) -> None:
         if self.jev_api_format not in {"chat_completions", "decisions"}:
@@ -160,4 +165,11 @@ class DetectorConfig:
             jev_legit_threshold=_env_float(
                 "PPD_JEV_LEGIT_THRESHOLD", 0.05, minimum=0.0, maximum=0.5
             ),
+            trusted_urls_enabled=_env_bool("PPD_TRUSTED_URLS_ENABLED", True),
+            trusted_url_ttl_s=_env_int("PPD_TRUSTED_URL_TTL_S", 3600, minimum=60, maximum=86400),
+            trusted_rag_url_ttl_s=_env_int("PPD_TRUSTED_RAG_URL_TTL_S", 86400, minimum=60, maximum=86400),
+            trusted_url_min_confidence=_env_float(
+                "PPD_TRUSTED_URL_MIN_CONFIDENCE", 0.90, minimum=0.90, maximum=1.0
+            ),
+            trusted_url_max_risk=_env_float("PPD_TRUSTED_URL_MAX_RISK", 0.03, minimum=0.0, maximum=0.05),
         )

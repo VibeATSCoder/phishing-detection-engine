@@ -314,6 +314,7 @@ def make_detector(tmp_path: Path, evidence: CrawlEvidence, verdict: Verdict, age
     detector.http = FakeHttp(evidence)
     detector.browser = None
     detector.intel = FakeIntel()
+    detector.trust = None
     detector.review = FakeReviewStore()
     detector.artifact = FakeArtifact(verdict)
     detector.tcn = FakeTCN()

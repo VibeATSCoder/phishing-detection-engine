@@ -1,36 +1,14 @@
-"""Hosts this service will clear without inspecting the page.
-
-An allowlist is the bluntest instrument here and the easiest to get dangerously
-wrong, so the rules it follows are narrow on purpose.
-
-Matching is on the registrable domain, exactly or as a subdomain of one. Never a
-substring: "google.com.verify-login.ir" contains google.com and is an attack, so
-anything doing containment would clear the very thing this product exists to
-catch. A host carrying punycode is refused outright, because a homograph of an
-entry is exactly what a lookalike is.
-
-What it buys is worth the care. These domains are visited constantly, they are
-never the phishing site, and every one of them costs a crawl, a model pass and
-two LLM calls to reach the answer already known. It also answers for sites whose
-crawler defences make the ordinary path fail — stackoverflow.com returns 403 to
-the crawler and was reported crawl_failed, which reads to a user as the product
-being broken.
-
-Entries are for organisations of a size where impersonation is the realistic
-threat and self-hosting a phishing page is not. Adding a domain here is a
-decision to stop looking at it, so it wants the same scrutiny as removing a
-detection rule.
-"""
+"""Curated first-party URLs the detector can answer without crawling."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
 
-from .url_utils import UnsafeURL, hostname, registrable_domain
+from .trusted_urls import exact_https_url
 
 
-CATALOG_VERSION = "allowlist-20261122-v4"
+CATALOG_VERSION = "allowlist-20261123-v5"
 
 
 #: Iranian services whose users are the target of the campaigns this detects.
@@ -98,10 +76,7 @@ _INTERNATIONAL = {
 #: Iranian banks, and the central bank that supervises them.
 #:
 #: Banking is the highest-value target in Persian-language phishing, so these
-#: are both the most impersonated names and the ones whose customers lose most
-#: when a clone is not caught. Every entry covers its subdomains, which is what
-#: matters here: the login lives at ib.<bank>, the card portal at another, and
-#: enumerating them would go stale within a quarter.
+#: are frequently impersonated. The catalog covers listed homepages.
 #:
 #: Provenance. Every domain below resolves. Nine of them were reachable from the
 #: machine this list was assembled on and each presented a TLS certificate for
@@ -147,35 +122,28 @@ ALLOWLISTED_DOMAINS: frozenset[str] = frozenset(
 )
 
 
-#: Whole namespaces, cleared for every host inside them.
-#:
-#: This is a far stronger claim than an entry above and only holds where the
-#: namespace is closed. gov.ir is administered by the Iranian government and
-#: cannot be registered at will, so "some host under gov.ir" is already a
-#: statement about who operates it. A registry anyone can buy from — .ir itself,
-#: or .com — would be the opposite, and clearing one would disable this service
-#: for a third of the web.
-#:
-#: Matching is on label boundaries. "gov.ir.verify-login.example" ends with the
-#: text but is a different namespace entirely, and is refused.
-ALLOWLISTED_SUFFIXES: frozenset[str] = frozenset({
-    "gov.ir",
-})
+_OFFICIAL_HOMEPAGES = {
+    host: domain
+    for domain in ALLOWLISTED_DOMAINS
+    for host in (domain, f"www.{domain}")
+}
+_OFFICIAL_URLS = {
+    "https://accounts.google.com/": "google.com",
+    "https://mail.google.com/": "google.com",
+    "https://mail.google.com/mail/u/0/": "google.com",
+    "https://www.filimo.com/signin": "filimo.com",
+    "https://gov.ir/": "gov.ir",
+}
 
 
 def _extra_domains() -> frozenset[str]:
-    """Operator additions, one registrable domain per line.
-
-    Kept separate from the catalog above so a deployment can extend the list
-    without editing the image, and so the two are distinguishable when auditing
-    why something was cleared.
-    """
+    """Operator-supplied exact HTTPS homepage hosts, one host per line."""
     path = os.getenv("PPD_ALLOWLIST_FILE", "").strip()
     if not path:
         return frozenset()
     try:
         text = Path(path).read_text(encoding="utf-8")
-    except OSError:
+    except (OSError, UnicodeError):
         return frozenset()
     return frozenset(
         line.strip().lower()
@@ -185,39 +153,13 @@ def _extra_domains() -> frozenset[str]:
 
 
 def allowlisted_domain(url: str) -> str | None:
-    """The allowlisted domain this URL belongs to, or None.
-
-    Returns the entry rather than a boolean so the caller can record which one
-    matched, which is what makes a wrong clearance traceable to a line in a
-    list rather than to "the allowlist".
-    """
-    # A URL this service cannot even parse is certainly not on a list of
-    # well-known sites, and a helper that raises on bad input invites a caller
-    # to forget the try. hostname() rejects an empty URL and a malformed IDN by
-    # raising, so both are answered here as "not allowlisted".
-    try:
-        host = hostname(url).lower().rstrip(".")
-    except UnsafeURL:
+    """Return the specific catalog entry for a known first-party URL."""
+    key = exact_https_url(url)
+    if key is None:
         return None
-    if not host:
+    if key in _OFFICIAL_URLS:
+        return _OFFICIAL_URLS[key]
+    host, _, path = key.removeprefix("https://").partition("/")
+    if path:
         return None
-    # A punycode label is how a lookalike is spelled. Refuse before matching:
-    # an entry can never legitimately need one, and the check costs nothing.
-    if "xn--" in host:
-        return None
-    # A closed namespace first: every host inside it is covered, so there is
-    # nothing to enumerate.
-    for suffix in ALLOWLISTED_SUFFIXES:
-        if host == suffix or host.endswith("." + suffix):
-            return suffix
-
-    candidates = ALLOWLISTED_DOMAINS | _extra_domains()
-    registrable = registrable_domain(host)
-    if registrable in candidates:
-        return registrable
-    # A subdomain of an entry: mail.google.com belongs to google.com. Matched
-    # on label boundaries so notgoogle.com cannot pass as google.com.
-    for entry in candidates:
-        if host == entry or host.endswith("." + entry):
-            return entry
-    return None
+    return _OFFICIAL_HOMEPAGES.get(host) or (host if host in _extra_domains() else None)
