@@ -17,6 +17,8 @@ from .url_utils import is_ip_literal
 
 
 MAX_CACHE_ENTRIES = 20_000
+MAX_SCAN_CACHE_ENTRIES = 5_000
+MAX_SCAN_CACHE_BYTES = 32_000
 MAX_REFERENCES = 100_000
 MAX_IMPORT_BYTES = 8_000_000
 RAG_FORMAT = "persianphish-rag-candidates-v1"
@@ -61,6 +63,13 @@ class TrustedResult:
     expires_at: float
 
 
+@dataclass(frozen=True)
+class CachedScan:
+    payload: dict
+    stored_at: float
+    expires_at: float
+
+
 class TrustedURLStore:
     """Expiring exact-URL decisions shared by detector workers and restarts."""
 
@@ -83,6 +92,15 @@ class TrustedURLStore:
                     PRIMARY KEY (url_hash, policy_hash)
                 );
                 CREATE INDEX IF NOT EXISTS trusted_urls_expiry ON trusted_urls(expires_at);
+                CREATE TABLE IF NOT EXISTS completed_scans (
+                    url_hash TEXT NOT NULL,
+                    policy_hash TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    stored_at REAL NOT NULL,
+                    expires_at REAL NOT NULL,
+                    PRIMARY KEY (url_hash, policy_hash)
+                );
+                CREATE INDEX IF NOT EXISTS completed_scans_expiry ON completed_scans(expires_at);
             """)
 
     def _connect(self) -> sqlite3.Connection:
@@ -134,6 +152,45 @@ class TrustedURLStore:
     def forget(self, url: str) -> None:
         with closing(self._connect()) as conn, conn:
             conn.execute("DELETE FROM trusted_urls WHERE url_hash = ?", (_digest(url),))
+
+    def lookup_scan(self, url: str, policy_hash: str) -> CachedScan | None:
+        with closing(self._connect()) as conn:
+            row = conn.execute(
+                """
+                SELECT payload, stored_at, expires_at FROM completed_scans
+                WHERE url_hash = ? AND policy_hash = ? AND expires_at > ?
+                """,
+                (_digest(url), policy_hash, time.time()),
+            ).fetchone()
+        return CachedScan(json.loads(row[0]), row[1], row[2]) if row else None
+
+    def remember_scan(self, url: str, policy_hash: str, payload: dict, ttl_s: int) -> None:
+        encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        if len(encoded.encode()) > MAX_SCAN_CACHE_BYTES:
+            return
+        now = time.time()
+        with closing(self._connect()) as conn, conn:
+            conn.execute("DELETE FROM completed_scans WHERE expires_at <= ?", (now,))
+            conn.execute(
+                """
+                INSERT INTO completed_scans VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(url_hash, policy_hash) DO UPDATE SET
+                    payload = excluded.payload, stored_at = excluded.stored_at, expires_at = excluded.expires_at
+                """,
+                (_digest(url), policy_hash, encoded, now, now + ttl_s),
+            )
+            conn.execute(
+                """
+                DELETE FROM completed_scans WHERE rowid IN (
+                    SELECT rowid FROM completed_scans ORDER BY expires_at DESC, rowid DESC LIMIT -1 OFFSET ?
+                )
+                """,
+                (MAX_SCAN_CACHE_ENTRIES,),
+            )
+
+    def forget_scan(self, url: str) -> None:
+        with closing(self._connect()) as conn, conn:
+            conn.execute("DELETE FROM completed_scans WHERE url_hash = ?", (_digest(url),))
 
     def replace_references(self, urls: list[str]) -> int:
         normalized = {key for value in urls if (key := exact_https_url(value)) is not None}

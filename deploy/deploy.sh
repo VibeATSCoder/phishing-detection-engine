@@ -22,7 +22,7 @@
 # Required in .env: OPENROUTER_API_KEY and INTERNAL_REVIEW_API_KEY.
 set -euo pipefail
 
-readonly DETECTOR_VERSION="3.11.2"
+readonly DETECTOR_VERSION="3.11.3"
 readonly REVIEW_VERSION="1.13.1"
 # Compose interpolates tags from its environment. Use the same tags that this
 # script checks and loads even if an older installation saved version pins.

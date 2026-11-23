@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
 from .trusted_urls import exact_https_url
+from .url_utils import UnsafeURL, normalize_url
 
 
 CATALOG_VERSION = "allowlist-20261123-v7"
@@ -182,8 +184,8 @@ def _is_google_search(url: str) -> bool:
     )
 
 
-def _extra_domains() -> frozenset[str]:
-    """Operator-supplied exact HTTPS hostnames, one host per line."""
+def _extra_entries() -> frozenset[str]:
+    """Operator-supplied hostnames or exact HTTPS URLs, one entry per line."""
     path = os.getenv("PPD_ALLOWLIST_FILE", "").strip()
     if not path:
         return frozenset()
@@ -192,7 +194,7 @@ def _extra_domains() -> frozenset[str]:
     except (OSError, UnicodeError):
         return frozenset()
     return frozenset(
-        line.strip().lower()
+        line.strip()
         for line in text.splitlines()
         if line.strip() and not line.strip().startswith("#")
     )
@@ -234,4 +236,20 @@ def allowlisted_domain(url: str) -> str | None:
 
     if domain and (domain not in _SHARED_CONTENT_DOMAINS or exact == home):
         return domain
-    return host if host in _extra_domains() else None
+    approved = _extra_entries()
+    if any(host == entry.lower() for entry in approved):
+        return host
+
+    # Accept reviewed localized paths without decoding escaped ASCII into
+    # authority, path separators, query, or fragment delimiters.
+    if (
+        "?" in url or "#" in url or "//" in parsed.path
+        or any(part in {".", ".."} for part in parsed.path.split("/"))
+        or re.search(r"%[0-7][0-9a-f]", parsed.path, re.IGNORECASE)
+    ):
+        return None
+    try:
+        key = normalize_url(url)
+    except UnsafeURL:
+        return None
+    return host if key in approved else None

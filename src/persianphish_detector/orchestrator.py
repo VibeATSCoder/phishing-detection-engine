@@ -65,17 +65,19 @@ def _rf_input_features(
     return extract_features(origin_view, facts), True
 
 
-def _observed_risk(features: Mapping[str, float]) -> bool:
-    """Risk that was observed on the page rather than inferred from it.
+def _observed_risk_signals(features: Mapping[str, float]) -> list[str]:
+    """DOM and URL evidence that can veto a model clearance."""
+    return [
+        code for code, present in (
+            ("external_form_action", features["external_form_action_count"] > 0),
+            ("suspicious_url_tokens", features["suspicious_token_count"] >= 2),
+            ("password_title_mismatch", features["password_input_count"] > 0 and features["title_domain_token_overlap"] == 0),
+        ) if present
+    ]
 
-    Every term here is a count taken from the DOM or the URL. None of them is a
-    model's opinion, which is what makes them safe to let veto a clearance.
-    """
-    return (
-        features["external_form_action_count"] > 0
-        or features["suspicious_token_count"] >= 2
-        or (features["password_input_count"] > 0 and features["title_domain_token_overlap"] == 0)
-    )
+
+def _observed_risk(features: Mapping[str, float]) -> bool:
+    return bool(_observed_risk_signals(features))
 
 
 def _deterministic_risk(features: Mapping[str, float], combined_score: float | None) -> bool:
@@ -101,7 +103,7 @@ from .observability import METRICS, record_detection, span, url_labels
 from .models import DetectorArtifact, load_artifact
 from .models.tcn import ONNXTCNPredictor, TCN_INPUT_CONTRACT
 from .review import ReviewStore
-from .trusted_urls import TrustedResult, TrustedURLStore, exact_https_url
+from .trusted_urls import CachedScan, TrustedResult, TrustedURLStore, exact_https_url
 from .types import CrawlEvidence, CrawlStatus, DetectionResult, Verdict
 from .url_utils import UnsafeURL, canonical_url, resolve_public_addresses, suspicious_token_count
 
@@ -238,6 +240,8 @@ class Detector:
             __version__, pipeline, run_fast, run_jev, policy.model_dump(),
             self.config.jev_base_url, self.config.jev_model, self.config.jev_api_format,
             self.config.min_quality_score, self.config.score_origin, self.config.jev_max_text_chars,
+            self.config.agent_base_url, self.config.parallel_review, self.config.use_browser,
+            self.config.enamad_verify, self.config.completed_scan_ttl_s,
             self.config.trusted_url_min_confidence, self.config.trusted_url_max_risk,
             self.config.trusted_url_ttl_s, self.config.trusted_rag_url_ttl_s,
             self.artifact.model_version if self.artifact else None,
@@ -315,6 +319,59 @@ class Detector:
         result.reason_codes.append("trusted_url_cache_stored")
         result.evidence_summary["trusted_url"] = asdict(learned)
 
+    def _cached_scan_result(
+        self, request_id: str, url: str, started: float,
+        pipeline: Sequence[PipelineStage] | None, cached: CachedScan,
+    ) -> DetectionResult:
+        data = cached.payload
+        summary = {
+            **data["evidence_summary"],
+            "scan_cache": {
+                "original_request_id": data["request_id"],
+                "stored_at": cached.stored_at,
+                "expires_at": cached.expires_at,
+            },
+        }
+        if pipeline is not None:
+            summary["pipeline"] = [{"stage": stage, "status": "skipped"} for stage in pipeline]
+        METRICS.crawl_outcomes.labels(source="scan_cache", status="skipped").inc()
+        result = self._result(
+            request_id, url, url, Verdict(data["verdict"]), data["risk_score"], "scan_cache",
+            CrawlStatus.SKIPPED, ["completed_scan_cache_hit", *data["reason_codes"]],
+            data["model_scores"], started, summary, evidence_items=data["evidence"],
+        )
+        self._persist(result)
+        return result
+
+    async def _remember_scan(self, key: tuple[str, str] | None, result: DetectionResult) -> None:
+        if key is None or self.trust is None:
+            return
+        summary = result.evidence_summary
+        if (
+            result.crawl_status != CrawlStatus.OK or result.url != result.final_url
+            or summary.get("http_status") != 200 or "trusted_url" in summary
+            or any(reason in {"reference_service_unavailable", "rag_unavailable"} for reason in result.reason_codes)
+            or any(step["status"] == "unavailable" for step in summary.get("pipeline", ()))
+            or any(
+                summary.get(stage, {}).get("status") in {"failed", "unavailable"}
+                for stage in ("jev", "jev_local", "rag", "agent_review")
+            )
+        ):
+            return
+        payload = {
+            "request_id": result.request_id, "verdict": result.verdict.value,
+            "risk_score": result.risk_score, "reason_codes": result.reason_codes,
+            "model_scores": result.model_scores, "evidence": result.evidence,
+            "evidence_summary": {
+                stage: summary[stage] for stage in ("jev", "jev_local", "rag", "agent_review")
+                if stage in summary
+            },
+        }
+        try:
+            await asyncio.to_thread(self.trust.remember_scan, *key, payload, self.config.completed_scan_ttl_s)
+        except sqlite3.Error:
+            pass
+
     async def _detect(
         self,
         url: str,
@@ -352,8 +409,13 @@ class Detector:
         url_only = browser_evidence is None and not agent_references
         trust_key = exact_https_url(url) if url_only else None
         policy_hash = None
-        if trust_key is not None and self.trust is not None:
+        cache_eligible = (
+            url_only and self.trust is not None and self.config.completed_scan_ttl_s > 0
+            and not self.config.allow_private_network
+        )
+        if self.trust is not None and (trust_key is not None or cache_eligible):
             policy_hash = self._trust_policy(pipeline, run_fast, run_jev, decision_thresholds)
+        scan_key = (url, policy_hash) if cache_eligible and policy_hash is not None else None
         if intel_match:
             METRICS.intel_matches.labels(
                 source=intel_match.source, verdict=intel_match.verdict
@@ -362,6 +424,11 @@ class Detector:
             if trust_key is not None and self.trust is not None:
                 try:
                     await asyncio.to_thread(self.trust.forget, trust_key)
+                except sqlite3.Error:
+                    pass
+            if scan_key is not None and self.trust is not None:
+                try:
+                    await asyncio.to_thread(self.trust.forget_scan, scan_key[0])
                 except sqlite3.Error:
                     pass
             summary = {"intel": asdict(intel_match)}
@@ -387,6 +454,17 @@ class Detector:
                     cached = None
                 if cached is not None:
                     return self._trust_result(request_id, normalized, started, pipeline, cached=cached)
+
+        if scan_key is not None and self.trust is not None:
+            try:
+                if use_trusted_urls:
+                    cached_scan = await asyncio.to_thread(self.trust.lookup_scan, *scan_key)
+                    if cached_scan is not None:
+                        return self._cached_scan_result(request_id, normalized, started, pipeline, cached_scan)
+                else:
+                    await asyncio.to_thread(self.trust.forget_scan, scan_key[0])
+            except (sqlite3.Error, ValueError, KeyError, TypeError):
+                pass
 
         _progress(on_progress, "crawl", "started")
         crawl_started = time.perf_counter()
@@ -451,10 +529,12 @@ class Detector:
             return result
         _progress(on_progress, "crawl", "completed")
         if pipeline is not None:
-            return await self._ordered_pipeline(
+            result = await self._ordered_pipeline(
                 request_id, normalized, evidence, pipeline, started, latency, on_progress,
                 decision_thresholds, trust_key, policy_hash,
             )
+            await self._remember_scan(scan_key, result)
+            return result
 
         if run_fast and self.artifact is not None:
             _progress(on_progress, "rf", "started")
@@ -688,6 +768,7 @@ class Detector:
         if result.verdict in {Verdict.SUSPICIOUS, Verdict.CRAWL_FAILED}:
             self._enqueue(result)
         await self._remember_trust(trust_key, policy_hash, evidence, result, features)
+        await self._remember_scan(scan_key, result)
         self._persist(result)
         return result
 
@@ -859,16 +940,21 @@ class Detector:
         if self.jev is not None:
             finding = await self._screen(evidence, url, features)
             policy = thresholds or DecisionThresholds.from_config(self.config, ordered_pipeline=True)
+            observed_signals = _observed_risk_signals(features)
+            if features["unicode_confusable_count"] > 0:
+                observed_signals.append("unicode_confusable")
+            if features["cross_domain_redirect_count"] > 0:
+                observed_signals.append("cross_domain_redirect")
             verdict, reasons = apply_jev(
-                Verdict.SUSPICIOUS, finding,
-                _observed_risk(features) or features["unicode_confusable_count"] > 0
-                or features["cross_domain_redirect_count"] > 0,
+                Verdict.SUSPICIOUS, finding, bool(observed_signals),
                 self.config, standalone=True, thresholds=policy,
             )
+            reasons.extend(f"jev_observed_{code}" for code in observed_signals)
             return verdict, {
                 **finding.audit_summary(),
                 "thresholds": policy.model_dump(),
                 "gates": [reason for reason in reasons if reason.startswith("jev_gate_")],
+                "observed_signals": observed_signals,
             }, reasons
         if self.jev_local is None:
             raise AgentServiceError("decision_model_unconfigured")

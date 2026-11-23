@@ -75,7 +75,7 @@ services:
       options: {max-size: "10m", max-file: "3"}
 
   detector:
-    image: phishing-detection-engine:${DETECTOR_VERSION:-3.11.2}
+    image: phishing-detection-engine:${DETECTOR_VERSION:-3.11.3}
     platform: linux/amd64
     pull_policy: never
     depends_on:
@@ -104,7 +104,8 @@ services:
       PPD_PARALLEL_REVIEW: ${PPD_PARALLEL_REVIEW:-1}
       PPD_TRUSTED_URLS_ENABLED: ${PPD_TRUSTED_URLS_ENABLED:-1}
       PPD_ALLOWLIST_FILE: ${PPD_ALLOWLIST_FILE:-/app/var/allowlist.txt}
-      PPD_TRUSTED_URL_TTL_S: ${PPD_TRUSTED_URL_TTL_S:-3600}
+      PPD_TRUSTED_URL_TTL_S: ${PPD_TRUSTED_URL_TTL_S:-86400}
+      PPD_COMPLETED_SCAN_TTL_S: ${PPD_COMPLETED_SCAN_TTL_S:-86400}
       PPD_TRUSTED_RAG_URL_TTL_S: ${PPD_TRUSTED_RAG_URL_TTL_S:-86400}
       PPD_TRUSTED_URL_MIN_CONFIDENCE: ${PPD_TRUSTED_URL_MIN_CONFIDENCE:-0.90}
       PPD_TRUSTED_URL_MAX_RISK: ${PPD_TRUSTED_URL_MAX_RISK:-0.03}

@@ -370,13 +370,13 @@ def apply_jev(
         gates.append("jev_gate_escalation_risk")
     if finding.confidence < policy.minimum_confidence:
         gates.append("jev_gate_confidence")
+    if standalone and policy.allow_early_clear and finding.risk > policy.legitimate_max_risk:
+        gates.append("jev_gate_legitimate_risk")
     if gates:
         return Verdict.SUSPICIOUS, [*reasons, "jev_escalated_to_review", *gates]
     if standalone:
         if not policy.allow_early_clear:
             reasons.append("jev_gate_early_clear_disabled")
-        elif finding.risk > policy.legitimate_max_risk:
-            reasons.append("jev_gate_legitimate_risk")
         else:
             return Verdict.LEGITIMATE, [*reasons, "jev_short_circuit_legit"]
     return verdict, reasons

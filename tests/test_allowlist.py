@@ -97,3 +97,13 @@ def test_operator_addition_covers_all_paths_on_the_exact_host(tmp_path, monkeypa
     assert allowlisted_domain("https://portal.example.net/signup/?ref=123") == "portal.example.net"
     assert allowlisted_domain("https://www.portal.example.net/signup/") is None
     assert allowlisted_domain("https://portal.example.net:8443/signup/") is None
+
+
+def test_operator_can_approve_one_localized_product_url(tmp_path, monkeypatch):
+    filepath = tmp_path / "allowlist.txt"
+    filepath.write_text("https://retailer.example/%D8%AA%D8%B3%D8%AA/\n")
+    monkeypatch.setenv("PPD_ALLOWLIST_FILE", str(filepath))
+    assert allowlisted_domain("https://retailer.example/%d8%aa%d8%b3%d8%aa/") == "retailer.example"
+    for path in ("/", "/login", "/تست", "/t/../تست/", "/%2fتست/", "/تست/?a=b", "/تست/#fragment"):
+        assert allowlisted_domain("https://retailer.example" + path) is None
+    assert allowlisted_domain("https://shop.retailer.example/تست/") is None
