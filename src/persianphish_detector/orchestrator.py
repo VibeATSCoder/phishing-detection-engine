@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
+import sqlite3
 import time
 import uuid
 from dataclasses import asdict, replace
@@ -10,6 +12,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 from typing import Any, Callable, Dict, Literal, Mapping, Optional, Sequence, Tuple, get_args
 
+from . import __version__
 from .allowlist import CATALOG_VERSION, allowlisted_domain
 from .agent import AgentClient, AgentReview, AgentServiceError
 from .config import DetectorConfig
@@ -98,8 +101,9 @@ from .observability import METRICS, record_detection, span, url_labels
 from .models import DetectorArtifact, load_artifact
 from .models.tcn import ONNXTCNPredictor, TCN_INPUT_CONTRACT
 from .review import ReviewStore
+from .trusted_urls import TrustedResult, TrustedURLStore, exact_https_url
 from .types import CrawlEvidence, CrawlStatus, DetectionResult, Verdict
-from .url_utils import UnsafeURL, canonical_url, resolve_public_addresses
+from .url_utils import UnsafeURL, canonical_url, resolve_public_addresses, suspicious_token_count
 
 
 PipelineStage = Literal["rf", "decision", "rag", "agent"]
@@ -139,6 +143,12 @@ class Detector:
         ) if config.use_browser else None
         self.intel = IntelStore(config.intel_db_path)
         self.review = ReviewStore(config.review_db_path)
+        self.trust: TrustedURLStore | None = None
+        if config.trusted_urls_enabled:
+            try:
+                self.trust = TrustedURLStore(config.intel_db_path)
+            except (OSError, sqlite3.Error) as exc:
+                LOGGER.warning("trusted URL cache unavailable: %s", type(exc).__name__)
         self.artifact: Optional[DetectorArtifact] = (
             load_artifact(config.artifact_path)
             if config.fast_models_enabled and config.artifact_path.exists() else None
@@ -208,12 +218,100 @@ class Detector:
         pipeline: Sequence[PipelineStage] | None = None,
         on_progress: ProgressCallback | None = None,
         decision_thresholds: DecisionThresholds | None = None,
+        use_trusted_urls: bool = True,
     ) -> DetectionResult:
         """Trace-wrapped entry point; the pipeline itself lives in ``_detect``."""
         with span("detector.detect", **url_labels(url)):
             return await self._detect(
-                url, browser_evidence, agent_references, use_jev, use_rf, pipeline, on_progress, decision_thresholds,
+                url, browser_evidence, agent_references, use_jev, use_rf, pipeline, on_progress,
+                decision_thresholds, use_trusted_urls,
             )
+
+    def _trust_policy(
+        self, pipeline: Sequence[PipelineStage] | None, run_fast: bool, run_jev: bool,
+        thresholds: DecisionThresholds | None,
+    ) -> str:
+        policy = thresholds or DecisionThresholds.from_config(self.config, ordered_pipeline=pipeline is not None)
+        fields = (
+            __version__, pipeline, run_fast, run_jev, policy.model_dump(),
+            self.config.jev_base_url, self.config.jev_model, self.config.jev_api_format,
+            self.config.min_quality_score, self.config.score_origin, self.config.jev_max_text_chars,
+            self.config.trusted_url_min_confidence, self.config.trusted_url_max_risk,
+            self.config.trusted_url_ttl_s, self.config.trusted_rag_url_ttl_s,
+            self.artifact.model_version if self.artifact else None,
+        )
+        return hashlib.sha256(json.dumps(fields, sort_keys=True).encode()).hexdigest()
+
+    def _trust_result(
+        self, request_id: str, url: str, started: float, pipeline: Sequence[PipelineStage] | None,
+        *, curated: str | None = None, cached: TrustedResult | None = None,
+    ) -> DetectionResult:
+        summary: dict[str, Any] = {}
+        if pipeline is not None:
+            summary["pipeline"] = [{"stage": stage, "status": "skipped"} for stage in pipeline]
+        if cached is not None:
+            stage = "trusted_url_cache"
+            risk = cached.risk
+            summary["trusted_url"] = asdict(cached)
+            reasons = ["trusted_url_cache_hit", cached.source]
+        else:
+            stage = "allowlist"
+            risk = 0.0
+            reasons = ["host_on_allowlist", f"allowlist_entry_{curated}", CATALOG_VERSION]
+        METRICS.crawl_outcomes.labels(source=stage, status="skipped").inc()
+        result = self._result(
+            request_id, url, url, Verdict.LEGITIMATE, risk, stage, CrawlStatus.SKIPPED,
+            reasons, {"rf": None, "tcn": None}, started, summary,
+        )
+        self._persist(result)
+        return result
+
+    async def _remember_trust(
+        self, url: str | None, policy: str | None, evidence: CrawlEvidence, result: DetectionResult,
+        features: Mapping[str, float] | None,
+    ) -> None:
+        if self.trust is None or url is None or policy is None:
+            return
+        if result.verdict != Verdict.LEGITIMATE:
+            try:
+                await asyncio.to_thread(self.trust.forget, url)
+            except sqlite3.Error:
+                pass
+            return
+        decision = result.evidence_summary.get("jev") or {}
+        confidence = decision.get("confidence")
+        risk = decision.get("risk")
+        if (
+            features is None
+            or "jev_short_circuit_legit" not in result.reason_codes
+            or decision.get("status") != "completed"
+            or decision.get("label") != "legitimate"
+            or decision.get("gates")
+            or any(step["status"] == "unavailable" for step in result.evidence_summary.get("pipeline", ()))
+            or not isinstance(confidence, (float, int))
+            or not isinstance(risk, (float, int))
+            or not self.config.trusted_url_min_confidence <= confidence <= 1
+            or not 0 <= risk <= self.config.trusted_url_max_risk
+            or self.config.allow_private_network
+            or not evidence.usable
+            or evidence.http_status != 200
+            or exact_https_url(evidence.final_url) != url
+            or any(exact_https_url(hop) != url for hop in evidence.redirect_chain)
+            or suspicious_token_count(url) != 0
+            or features["password_input_count"] != 0
+            or _observed_risk(features)
+            or (result.model_scores.get("combined") or 0) >= 0.15
+        ):
+            return
+        try:
+            learned = await asyncio.to_thread(
+                self.trust.remember, url, policy, risk, confidence,
+                self.config.trusted_url_ttl_s, self.config.trusted_rag_url_ttl_s,
+            )
+        except sqlite3.Error:
+            return
+        result.reason_codes.append("trusted_url_cache_stored")
+        result.evidence_summary["trusted_url"] = asdict(learned)
 
     async def _detect(
         self,
@@ -225,6 +323,7 @@ class Detector:
         pipeline: Sequence[PipelineStage] | None = None,
         on_progress: ProgressCallback | None = None,
         decision_thresholds: DecisionThresholds | None = None,
+        use_trusted_urls: bool = True,
     ) -> DetectionResult:
         started = time.perf_counter()
         request_id = uuid.uuid4().hex
@@ -247,40 +346,44 @@ class Detector:
             record_detection(invalid)
             return invalid
 
-        intel_match = self.intel.lookup(normalized) if pipeline is None else None
-
-        # Answered before the crawl, but after the local phishing feed has had
-        # its say. The feed keeps precedence deliberately: a domain observed
-        # serving phishing is not cleared because it also appears on a list of
-        # large sites, and that ordering is what stops the allowlist becoming a
-        # way to launder a known-bad host.
-        #
-        # Beyond the saved crawl, model pass and two LLM calls, this answers for
-        # sites whose crawler defences make the ordinary path fail —
-        # stackoverflow.com returns 403 and was reported crawl_failed, which
-        # reads to a user as this service being broken rather than as the site
-        # declining to be read.
-        allowlisted = allowlisted_domain(normalized)
-        if pipeline is None and allowlisted and not intel_match and run_fast and not run_jev:
-            METRICS.crawl_outcomes.labels(source="allowlist", status="skipped").inc()
-            return self._result(
-                request_id, normalized, normalized, Verdict.LEGITIMATE, 0.0, "allowlist",
-                CrawlStatus.OK,
-                ["host_on_allowlist", f"allowlist_entry_{allowlisted}", CATALOG_VERSION],
-                {"rf": None, "tcn": None}, started, {},
-            )
-
+        intel_match = self.intel.lookup(normalized)
+        trust_key = exact_https_url(url) if browser_evidence is None and not agent_references else None
+        policy_hash = None
+        if trust_key is not None and self.trust is not None:
+            policy_hash = self._trust_policy(pipeline, run_fast, run_jev, decision_thresholds)
         if intel_match:
             METRICS.intel_matches.labels(
                 source=intel_match.source, verdict=intel_match.verdict
             ).inc()
         if intel_match and intel_match.verdict == "phishing":
-            return self._result(
+            if trust_key is not None and self.trust is not None:
+                try:
+                    await asyncio.to_thread(self.trust.forget, trust_key)
+                except sqlite3.Error:
+                    pass
+            summary = {"intel": asdict(intel_match)}
+            if pipeline is not None:
+                summary["pipeline"] = [{"stage": stage, "status": "skipped"} for stage in pipeline]
+            result = self._result(
                 request_id, normalized, normalized, Verdict.PHISHING, 1.0, "reputation",
                 CrawlStatus.PARTIAL, ["exact_local_phishing_feed_match", f"intel_{intel_match.source}"],
-                {"rf": None, "tcn": None}, started, {"intel": asdict(intel_match)},
+                {"rf": None, "tcn": None}, started, summary,
                 evidence_items=derive_evidence(intel_match=intel_match),
             )
+            self._persist(result)
+            return result
+
+        if use_trusted_urls and self.config.trusted_urls_enabled and trust_key is not None:
+            curated = allowlisted_domain(trust_key)
+            if curated is not None:
+                return self._trust_result(request_id, normalized, started, pipeline, curated=curated)
+            if self.trust is not None and policy_hash is not None:
+                try:
+                    cached = await asyncio.to_thread(self.trust.lookup, trust_key, policy_hash)
+                except sqlite3.Error:
+                    cached = None
+                if cached is not None:
+                    return self._trust_result(request_id, normalized, started, pipeline, cached=cached)
 
         _progress(on_progress, "crawl", "started")
         crawl_started = time.perf_counter()
@@ -337,14 +440,17 @@ class Detector:
 
         if not evidence.usable:
             _progress(on_progress, "crawl", "unavailable")
-            return self._failed_crawl(
+            result = self._failed_crawl(
                 request_id, normalized, evidence, run_fast and pipeline is None, started, latency,
                 pipeline=pipeline,
             )
+            await self._remember_trust(trust_key, policy_hash, evidence, result, None)
+            return result
         _progress(on_progress, "crawl", "completed")
         if pipeline is not None:
             return await self._ordered_pipeline(
-                request_id, normalized, evidence, pipeline, started, latency, on_progress, decision_thresholds,
+                request_id, normalized, evidence, pipeline, started, latency, on_progress,
+                decision_thresholds, trust_key, policy_hash,
             )
 
         if run_fast and self.artifact is not None:
@@ -368,7 +474,9 @@ class Detector:
             latency["browser"] = (time.perf_counter() - browser_started) * 1000
             latency["crawl"] += latency["browser"]
             if _is_terminal_crawl_failure(rendered):
-                return self._failed_crawl(request_id, normalized, rendered, run_fast, started, latency)
+                result = self._failed_crawl(request_id, normalized, rendered, run_fast, started, latency)
+                await self._remember_trust(trust_key, policy_hash, rendered, result, None)
+                return result
             if rendered.usable:
                 evidence = rendered
                 facts_started = time.perf_counter()
@@ -576,6 +684,7 @@ class Detector:
         )
         if result.verdict in {Verdict.SUSPICIOUS, Verdict.CRAWL_FAILED}:
             self._enqueue(result)
+        await self._remember_trust(trust_key, policy_hash, evidence, result, features)
         self._persist(result)
         return result
 
@@ -584,6 +693,8 @@ class Detector:
         pipeline: Sequence[PipelineStage], started: float, latency: dict[str, float],
         on_progress: ProgressCallback | None = None,
         decision_thresholds: DecisionThresholds | None = None,
+        trust_key: str | None = None,
+        policy_hash: str | None = None,
     ) -> DetectionResult:
         final_url = evidence.final_url or url
         verdict = Verdict.SUSPICIOUS
@@ -688,6 +799,7 @@ class Detector:
         )
         if verdict == Verdict.SUSPICIOUS:
             self._enqueue(result)
+        await self._remember_trust(trust_key, policy_hash, evidence, result, features)
         self._persist(result)
         return result
 

@@ -96,6 +96,7 @@ class DetectRequest(BaseModel):
     use_rf: Optional[bool] = None
     pipeline: list[PipelineStage] | None = Field(default=None, min_length=1, max_length=4)
     decision_thresholds: DecisionThresholds | None = None
+    use_trusted_urls: bool = Field(default=True, description="Reuse a trusted result before crawling.")
 
     @model_validator(mode="after")
     def validate_total_reference_size(self) -> "DetectRequest":
@@ -189,6 +190,7 @@ def create_app(config: DetectorConfig | None = None) -> FastAPI:
             "policy_production_ready": detector.artifact.policy.production_ready if detector.artifact else False,
             "agent_configured": detector.agent is not None,
             "browser_enabled": detector.browser is not None,
+            "trusted_urls_enabled": selected_config.trusted_urls_enabled,
         }
 
     @app.get("/ready")
@@ -224,6 +226,7 @@ def create_app(config: DetectorConfig | None = None) -> FastAPI:
             "service_version": __version__,
             "stages": list(PIPELINE_STAGES),
             "decision_thresholds": detector.jev is not None,
+            "trusted_urls": selected_config.trusted_urls_enabled,
             "configured": {
                 "rf": selected_config.fast_models_enabled and detector.artifact is not None,
                 "decision": detector.jev is not None or detector.jev_local is not None,
@@ -241,6 +244,8 @@ def create_app(config: DetectorConfig | None = None) -> FastAPI:
         browser_payload = payload.browser_evidence.model_dump() if payload.browser_evidence else None
         agent_references = [item.model_dump(mode="json") for item in payload.agent_references]
         options: dict[str, Any] = {"use_jev": payload.use_jev, "use_rf": payload.use_rf}
+        if not payload.use_trusted_urls:
+            options["use_trusted_urls"] = False
         if payload.pipeline is not None:
             options["pipeline"] = payload.pipeline
         if payload.decision_thresholds is not None:

@@ -85,7 +85,7 @@ jobs:
           mkdir -p "$dir/deploy"
           cp deploy/compose.yaml deploy/compose.images.yaml deploy/compose.references.yaml \
              deploy/COMPATIBILITY.json deploy/INTEGRATED.md deploy/deploy.sh \
-             deploy/install.sh deploy/stack.env.example "$dir/deploy/"
+             deploy/install.sh deploy/stack.env.example deploy/export_rag_candidates.py "$dir/deploy/"
           cp .env.example "$dir/"
           chmod +x "$dir/deploy/deploy.sh" "$dir/deploy/install.sh"
           [ -f deploy/IMAGE_BUNDLE.md ] && cp deploy/IMAGE_BUNDLE.md "$dir/deploy/"

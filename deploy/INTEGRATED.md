@@ -1,6 +1,24 @@
 # Minimal integrated deployment
 
-Stack 1.2.9 uses detector v3.9.9, reviewer v1.12.4, extension v3.12.5, and optional RAG v2.2.0. The component contract is recorded in [COMPATIBILITY.json](COMPATIBILITY.json).
+Stack 1.3.0 uses detector v3.10.0, reviewer v1.12.4, extension v3.14.0, and optional RAG v2.2.0. The component contract is recorded in [COMPATIBILITY.json](COMPATIBILITY.json).
+
+## Trusted URLs and repeat visits
+
+The detector checks local phishing intelligence first. Curated first-party pages such as the Google homepages can then return immediately for the default or a custom pipeline. Each shortcut lists the selected stages as skipped.
+
+An exact HTTPS URL earns a reusable result when a fresh, successful server crawl reaches a legitimate Decision result with at least 0.90 confidence and at most 0.03 risk. It must have clean observed evidence and the same final URL. Login forms, redirects, query strings, fragments, and URLs with ambiguous path encoding stay on the normal scan path.
+
+The detector keeps eligible results in the existing data volume. Each result expires one hour after verification by default, with a separate 24-hour window for verified RAG reference homepages. Hits do not extend expiry. Changing stage order, Decision settings, provider/model, or detector build requires a fresh result for that policy. The full installer imports the active RAG index's validated homepage URLs as candidates. Each candidate receives a live scan on its first eligible visit before it can use the longer window.
+
+| Setting | Default |
+| --- | --- |
+| `PPD_TRUSTED_URLS_ENABLED` | `1` |
+| `PPD_TRUSTED_URL_TTL_S` | `3600` |
+| `PPD_TRUSTED_RAG_URL_TTL_S` | `86400` |
+| `PPD_TRUSTED_URL_MIN_CONFIDENCE` | `0.90` |
+| `PPD_TRUSTED_URL_MAX_RISK` | `0.03` |
+
+For a fresh check through the API, send `"use_trusted_urls": false` in the `POST /v1/detect` body. The response identifies reuse as `trusted_url_cache` and reports the source, risk, confidence, and expiration.
 
 This bundle runs two services:
 
@@ -21,7 +39,7 @@ No checkout, no build, no `gh`. This downloads every release artefact, loads
 each image, writes one aggregated `.env`, and starts the stack:
 
 ```bash
-curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.9/install-rag-check.sh | bash
+curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.10.0/install.sh | bash
 ```
 
 It stops and tells you what to fill in the first time, because
@@ -44,7 +62,7 @@ Run these commands from the directory containing `deploy/.env`. Use
 
 ```bash
 curl -fL --progress-bar --connect-timeout 120 --max-time 86400 \
-  -o install.sh https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.9/install-rag-check.sh
+  -o install.sh https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.10.0/install.sh
 bash install.sh --upgrade --ask-token --full
 ```
 
@@ -99,7 +117,7 @@ stack bundle from the two releases into one directory, unpack the bundle, and
 run the script:
 
 ```bash
-tar -xzf persianphish-stack-1.2.9-deploy.tar.gz     # compose files and this guide
+tar -xzf persianphish-stack-1.3.0-deploy.tar.gz     # compose files and this guide
 cp deploy/stack.env.example deploy/.env             # then set the two keys
 bash deploy/deploy.sh
 ```
@@ -354,7 +372,7 @@ being down degrades reviews to the same behaviour as not running it at all.
 
 ## Manual installation and extension testing
 
-Download [install-rag-check.sh](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.9/install-rag-check.sh)
+Download [install.sh](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.10.0/install.sh)
 into your installation directory. Run it in a terminal so it can show the
 release links and check for local files.
 
@@ -366,12 +384,12 @@ Use these release assets if you are downloading on a separate computer.
 
 | Component | Assets |
 | --- | --- |
-| Detector | [Docker image and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/v3.9.9) |
-| Stack | [Deployment bundle](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.9.9/persianphish-stack-1.2.9-deploy.tar.gz) |
+| Detector | [Docker image and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/v3.10.0) |
+| Stack | [Deployment bundle](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.10.0/persianphish-stack-1.3.0-deploy.tar.gz) |
 | Reviewer | [Docker image and checksum](https://github.com/VibeATSCoder/agentic-phishing-review/releases/tag/v1.12.4) |
 | RAG | [Image parts, checksums, and loader](https://github.com/VibeATSCoder/phishing-rag-service/releases/tag/v2.2.0) |
 | Reference index | [Index parts and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/rag-index-2.0.0) |
-| Browser extension | [Chrome/Edge ZIP](https://github.com/VibeATSCoder/phishingshield-persian/releases/download/v3.12.5/phishingshield-persian-v3.12.5.zip) |
+| Browser extension | [Chrome/Edge ZIP](https://github.com/VibeATSCoder/phishingshield-persian/releases/download/v3.14.0/phishingshield-persian-v3.14.0.zip) |
 
 The installer prompts for the reviewer provider and offers a separate Decision
 model endpoint. For AvalAI Jev use base URL `https://api.avalai.ir/v1`, format
