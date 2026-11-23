@@ -1,6 +1,6 @@
 # Minimal integrated deployment
 
-Stack 1.4.1 uses detector v3.11.1, reviewer v1.13.0, extension v3.14.0, and optional RAG v2.3.0. The component contract is recorded in [COMPATIBILITY.json](COMPATIBILITY.json).
+Stack 1.4.2 uses detector v3.11.2, reviewer v1.13.1, extension v3.14.0, and optional RAG v2.3.0. The component contract is recorded in [COMPATIBILITY.json](COMPATIBILITY.json).
 
 ## Concurrent review
 
@@ -23,9 +23,9 @@ The limits set how much traffic the stack can admit. Completion times depend on 
 
 ## Trusted URLs and repeat visits
 
-The detector checks local phishing intelligence first. Curated first-party pages such as the Google homepages can then return immediately for the default or a custom pipeline. Each shortcut lists the selected stages as skipped.
+The detector checks exact phishing intelligence first. For an approved HTTPS hostname, first-party paths with or without a trailing slash can return immediately, with the selected stages listed as skipped. Subdomains require their own catalog entry. Existing homepage-only entries on shared platforms and Google's outbound routes stay scoped. Operators can approve additional exact HTTPS hostnames with one hostname per line in the allowlist file.
 
-An exact HTTPS URL earns a reusable result when a fresh, successful server crawl reaches a legitimate Decision result with at least 0.90 confidence and at most 0.03 risk. It must have clean observed evidence and the same final URL. Login forms, redirects, query strings, fragments, and URLs with ambiguous path encoding stay on the normal scan path.
+An exact HTTPS URL earns a reusable result when a fresh, successful server crawl reaches a legitimate Decision result with at least 0.90 confidence and at most 0.03 risk. It must have clean observed evidence and the same final URL. Login forms, redirects, query strings, fragments, and URLs with ambiguous path encoding cannot earn a learned cache entry.
 
 The detector keeps eligible results in the existing data volume. Each result expires one hour after verification by default, with a separate 24-hour window for verified RAG reference homepages. Hits do not extend expiry. Changing stage order, Decision settings, provider/model, or detector build requires a fresh result for that policy. The full installer imports the active RAG index's validated homepage URLs as candidates. Each candidate receives a live scan on its first eligible visit before it can use the longer window.
 
@@ -58,7 +58,7 @@ No checkout, no build, no `gh`. This downloads every release artefact, loads
 each image, writes one aggregated `.env`, and starts the stack:
 
 ```bash
-curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.11.1/install.sh | bash
+curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.11.2/install.sh | bash
 ```
 
 It stops and tells you what to fill in the first time, because
@@ -81,7 +81,7 @@ Run these commands from the directory containing `deploy/.env`. Use
 
 ```bash
 curl -fL --progress-bar --connect-timeout 120 --max-time 86400 \
-  -o install.sh https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.11.1/install.sh
+  -o install.sh https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.11.2/install.sh
 bash install.sh --upgrade --ask-token --full
 ```
 
@@ -136,7 +136,7 @@ stack bundle from the two releases into one directory, unpack the bundle, and
 run the script:
 
 ```bash
-tar -xzf persianphish-stack-1.4.1-deploy.tar.gz     # compose files and this guide
+tar -xzf persianphish-stack-1.4.2-deploy.tar.gz     # compose files and this guide
 cp deploy/stack.env.example deploy/.env             # then set the two keys
 bash deploy/deploy.sh
 ```
@@ -391,7 +391,7 @@ being down degrades reviews to the same behaviour as not running it at all.
 
 ## Manual installation and extension testing
 
-Download [install.sh](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.11.1/install.sh)
+Download [install.sh](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.11.2/install.sh)
 into your installation directory. Run it in a terminal so it can show the
 release links and check for local files.
 
@@ -403,9 +403,9 @@ Use these release assets if you are downloading on a separate computer.
 
 | Component | Assets |
 | --- | --- |
-| Detector | [Docker image and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/v3.11.1) |
-| Stack | [Deployment bundle](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.11.1/persianphish-stack-1.4.1-deploy.tar.gz) |
-| Reviewer | [Docker image and checksum](https://github.com/VibeATSCoder/agentic-phishing-review/releases/tag/v1.13.0) |
+| Detector | [Docker image and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/v3.11.2) |
+| Stack | [Deployment bundle](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.11.2/persianphish-stack-1.4.2-deploy.tar.gz) |
+| Reviewer | [Docker image and checksum](https://github.com/VibeATSCoder/agentic-phishing-review/releases/tag/v1.13.1) |
 | RAG | [Image parts, checksums, and loader](https://github.com/VibeATSCoder/phishing-rag-service/releases/tag/v2.3.0) |
 | Reference index | [Index parts and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/rag-index-2.0.0) |
 | Browser extension | [Chrome/Edge ZIP](https://github.com/VibeATSCoder/phishingshield-persian/releases/download/v3.14.0/phishingshield-persian-v3.14.0.zip) |

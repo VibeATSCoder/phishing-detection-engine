@@ -18,6 +18,10 @@ from persianphish_detector.allowlist import ALLOWLISTED_DOMAINS, CATALOG_VERSION
     ("https://accounts.google.com/", "google.com"),
     ("https://mail.google.com/mail/u/0/", "google.com"),
     ("https://www.digikala.com/", "digikala.com"),
+    ("https://www.digikala.com/search/category/?page=2", "digikala.com"),
+    ("https://digikala.com/mag/%D8%AA%D8%B3%D8%AA/", "digikala.com"),
+    ("https://www.google.com/maps/place/Tehran/", "google.com"),
+    ("https://www.google.com/search/?q=example", "google.com"),
     ("https://www.filimo.com/signin", "filimo.com"),
     ("https://www.yahoo.com/", "yahoo.com"),
     ("https://stackoverflow.com/", "stackoverflow.com"),
@@ -55,6 +59,12 @@ def test_curated_first_party_urls_are_cleared(url, entry):
     "http://www.google.com/search?q=example",
     "https://docs.google.com/forms/",
     "https://custom.googleusercontent.com/",
+    "https://shops.digikala.com/sale/",
+    "https://www.digikala.com.example.net/search/",
+    "https://github.com/example/project/",
+    "https://www.google.com/url/?q=https://example.net/",
+    "https://www.google.com/amp/s/example.net/",
+    "https://accounts.google.com/unreviewed-route/",
     "https://www.google.com/%2f",
     "https://www.google.com/#page",
     "https://random.gov.ir/",
@@ -77,10 +87,13 @@ def test_catalog_uses_normalized_homepage_domains():
         assert allowlisted_domain(f"https://www.{domain}/") == domain
 
 
-def test_operator_addition_applies_only_to_the_exact_homepage(tmp_path, monkeypatch):
+def test_operator_addition_covers_all_paths_on_the_exact_host(tmp_path, monkeypatch):
     filepath = tmp_path / "allowlist.txt"
     filepath.write_text("# Trust example's first-party homepage\nportal.example.net\n")
     monkeypatch.setenv("PPD_ALLOWLIST_FILE", str(filepath))
     assert allowlisted_domain("https://portal.example.net/") == "portal.example.net"
     assert allowlisted_domain("https://nested.portal.example.net/") is None
-    assert allowlisted_domain("https://portal.example.net/signup") is None
+    assert allowlisted_domain("https://portal.example.net/signup") == "portal.example.net"
+    assert allowlisted_domain("https://portal.example.net/signup/?ref=123") == "portal.example.net"
+    assert allowlisted_domain("https://www.portal.example.net/signup/") is None
+    assert allowlisted_domain("https://portal.example.net:8443/signup/") is None

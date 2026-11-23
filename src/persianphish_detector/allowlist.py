@@ -1,15 +1,15 @@
-"""Curated first-party URLs the detector can answer without crawling."""
+"""Curated first-party hosts and URLs the detector can answer without crawling."""
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, urlsplit
 
 from .trusted_urls import exact_https_url
 
 
-CATALOG_VERSION = "allowlist-20261123-v6"
+CATALOG_VERSION = "allowlist-20261123-v7"
 
 
 #: Iranian services whose users are the target of the campaigns this detects.
@@ -123,11 +123,20 @@ ALLOWLISTED_DOMAINS: frozenset[str] = frozenset(
 )
 
 
-_OFFICIAL_HOMEPAGES = {
+_OFFICIAL_HOSTS = {
     host: domain
     for domain in ALLOWLISTED_DOMAINS
     for host in (domain, f"www.{domain}")
 }
+# These origins also publish pages controlled by accounts or tenants on the
+# same hostname. The catalog only trusts their exact front pages.
+_SHARED_CONTENT_DOMAINS = frozenset({
+    "azure.com", "bitbucket.org", "discord.com", "dropbox.com", "facebook.com",
+    "github.com", "gitlab.com", "googleusercontent.com", "huggingface.co",
+    "instagram.com", "linkedin.com", "notion.so", "npmjs.com", "reddit.com",
+    "sharepoint.com", "t.me", "telegram.org", "tiktok.com", "twitch.tv",
+    "twitter.com", "vimeo.com", "x.com", "youtube.com",
+})
 _OFFICIAL_URLS = {
     "https://accounts.google.com/": "google.com",
     "https://mail.google.com/": "google.com",
@@ -139,8 +148,11 @@ _OFFICIAL_URLS = {
 
 _GOOGLE_SEARCH_URLS = frozenset({
     "https://google.com/search",
+    "https://google.com/search/",
     "https://www.google.com/search",
+    "https://www.google.com/search/",
 })
+_GOOGLE_OUTBOUND_ROUTES = frozenset({"aclk", "amp", "imgres", "local_url", "url"})
 # Search terms, results display options, and browser tracking parameters.
 # Parameters outside this list can change the route and require a scan.
 _GOOGLE_SEARCH_PARAMS = frozenset({
@@ -171,7 +183,7 @@ def _is_google_search(url: str) -> bool:
 
 
 def _extra_domains() -> frozenset[str]:
-    """Operator-supplied exact HTTPS homepage hosts, one host per line."""
+    """Operator-supplied exact HTTPS hostnames, one host per line."""
     path = os.getenv("PPD_ALLOWLIST_FILE", "").strip()
     if not path:
         return frozenset()
@@ -187,13 +199,39 @@ def _extra_domains() -> frozenset[str]:
 
 
 def allowlisted_domain(url: str) -> str | None:
-    """Return the specific catalog entry for a known first-party URL."""
-    key = exact_https_url(url)
-    if key is None:
-        return "google.com" if _is_google_search(url) else None
-    if key in _OFFICIAL_URLS:
-        return _OFFICIAL_URLS[key]
-    host, _, path = key.removeprefix("https://").partition("/")
-    if path:
+    """Return the catalog entry for an approved HTTPS host or route."""
+    if any(ch == "\\" or ord(ch) <= 32 or ord(ch) == 127 for ch in url):
         return None
-    return _OFFICIAL_HOMEPAGES.get(host) or (host if host in _extra_domains() else None)
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return None
+    home = exact_https_url(f"{parsed.scheme}://{parsed.netloc}/")
+    if home is None:
+        return None
+
+    exact = exact_https_url(url)
+    if exact in _OFFICIAL_URLS:
+        return _OFFICIAL_URLS[exact]
+
+    host = home.removeprefix("https://").removesuffix("/")
+    domain = _OFFICIAL_HOSTS.get(host)
+    if domain == "google.com":
+        # Google also fronts outbound links and interstitials on these hosts.
+        path_parts = parsed.path.lower().strip("/").split("/")
+        if (
+            "%" in parsed.path
+            or "//" in parsed.path
+            or "." in path_parts
+            or ".." in path_parts
+            or path_parts[0] in _GOOGLE_OUTBOUND_ROUTES
+        ):
+            return None
+        if path_parts[0] == "search":
+            return domain if _is_google_search(url) else None
+        if path_parts == [""] and exact != home:
+            return None
+
+    if domain and (domain not in _SHARED_CONTENT_DOMAINS or exact == home):
+        return domain
+    return host if host in _extra_domains() else None
