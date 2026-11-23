@@ -151,6 +151,7 @@ def derive_evidence(
     intel_match: Any = None,
     crawl_status: str = "",
     agent_codes: Sequence[str] = (),
+    tls_checked: bool = True,
 ) -> list[dict[str, str]]:
     """Collect every observation worth showing a caller, most severe first.
 
@@ -175,6 +176,8 @@ def derive_evidence(
 
     if features:
         for code, feature, threshold, source, severity in _FEATURE_RULES:
+            if feature == "tls_missing" and not tls_checked:
+                continue
             value = _numeric(features, feature)
             if value is not None and value > threshold:
                 add(code, source, severity)

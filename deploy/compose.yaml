@@ -2,14 +2,14 @@ name: persianphish-integrated
 
 services:
   review:
-    image: agentic-phishing-review:1.12.4-integrated
+    image: agentic-phishing-review:1.13.0-integrated
     build:
       context: ${AGENT_REVIEW_CONTEXT:-../../agentic-phishing-review}
       dockerfile: Dockerfile
       target: production
       args:
         INSTALL_BROWSER: "0"
-        APP_VERSION: "1.12.4"
+        APP_VERSION: "1.13.0"
     environment:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:?Set OPENROUTER_API_KEY in .env}
       OPENROUTER_MODEL: ${OPENROUTER_MODEL:-google/gemma-4-31b-it}
@@ -19,7 +19,8 @@ services:
       REVIEW_API_KEY: ${INTERNAL_REVIEW_API_KEY:?Set INTERNAL_REVIEW_API_KEY in .env}
       REVIEW_DATABASE_PATH: /data/reviews.sqlite3
       REVIEW_USE_BROWSER: "0"
-      REVIEW_WORKER_CONCURRENCY: ${REVIEW_WORKER_CONCURRENCY:-2}
+      REVIEW_WORKER_CONCURRENCY: ${PPD_REVIEW_WORKERS:-100}
+      REVIEW_PENDING_EVIDENCE_BYTES: ${REVIEW_PENDING_EVIDENCE_BYTES:-256000000}
       REVIEW_RETENTION_DAYS: ${REVIEW_RETENTION_DAYS:-30}
       # Reference retrieval. Empty by default, which is a supported
       # configuration: the reviewer then supplies no comparison references and
@@ -65,12 +66,12 @@ services:
         max-file: "3"
 
   detector:
-    image: phishing-detection-engine:3.10.0-integrated
+    image: phishing-detection-engine:3.11.0-integrated
     build:
       context: ..
       dockerfile: Dockerfile
       args:
-        APP_VERSION: "3.10.0"
+        APP_VERSION: "3.11.0"
     depends_on:
       review:
         condition: service_healthy
@@ -92,6 +93,9 @@ services:
       PPD_JEV_PIPELINE_EARLY_CLEAR: ${PPD_JEV_PIPELINE_EARLY_CLEAR:-1}
       PPD_JEV_LEGIT_THRESHOLD: ${PPD_JEV_LEGIT_THRESHOLD:-0.05}
       PPD_INTEL_DB: /app/var/intel.sqlite3
+      PPD_AGENT_MAX_CONNECTIONS: ${PPD_AGENT_MAX_CONNECTIONS:-128}
+      PPD_REFERENCE_TIMEOUT_S: ${PPD_REFERENCE_TIMEOUT_S:-35}
+      PPD_PARALLEL_REVIEW: ${PPD_PARALLEL_REVIEW:-1}
       PPD_TRUSTED_URLS_ENABLED: ${PPD_TRUSTED_URLS_ENABLED:-1}
       PPD_ALLOWLIST_FILE: ${PPD_ALLOWLIST_FILE:-/app/var/allowlist.txt}
       PPD_TRUSTED_URL_TTL_S: ${PPD_TRUSTED_URL_TTL_S:-3600}

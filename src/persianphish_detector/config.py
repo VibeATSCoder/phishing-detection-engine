@@ -37,6 +37,9 @@ class DetectorConfig:
     agent_api_key: str = ""
     agent_timeout_s: float = 60.0
     agent_poll_interval_s: float = 0.25
+    agent_max_connections: int = 128
+    reference_timeout_s: float = 35.0
+    parallel_review: bool = True
     agent_prefetch_references: bool = False
     api_key: str = ""
     use_browser: bool = True
@@ -125,6 +128,9 @@ class DetectorConfig:
             agent_poll_interval_s=_env_float(
                 "PPD_AGENT_POLL_INTERVAL_S", 0.25, minimum=0.05, maximum=5.0
             ),
+            agent_max_connections=_env_int("PPD_AGENT_MAX_CONNECTIONS", 128, minimum=1, maximum=512),
+            reference_timeout_s=_env_float("PPD_REFERENCE_TIMEOUT_S", 35, minimum=2, maximum=120),
+            parallel_review=_env_bool("PPD_PARALLEL_REVIEW", True),
             agent_prefetch_references=_env_bool("PPD_AGENT_PREFETCH_REFERENCES", False),
             api_key=os.getenv("PPD_API_KEY", ""),
             use_browser=_env_bool("PPD_USE_BROWSER", True),

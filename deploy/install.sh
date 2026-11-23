@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One command to fetch, load and start the whole stack.
 #
-#   curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.10.0/install.sh | bash
+#   curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.11.0/install.sh | bash
 #
 # or, having downloaded it:
 #
@@ -129,18 +129,18 @@ ARTEFACT_DIRS=()
 # Versions this stack releases as. deploy/COMPATIBILITY.json records the same
 # numbers and tests/test_release_contract.py asserts the two agree, so these
 # cannot drift from the contract unnoticed.
-DETECTOR_VERSION="${DETECTOR_VERSION:-3.10.0}"
-REVIEW_VERSION="${REVIEW_VERSION:-1.12.4}"
-RAG_VERSION="${RAG_VERSION:-2.2.0}"
+DETECTOR_VERSION="${DETECTOR_VERSION:-3.11.0}"
+REVIEW_VERSION="${REVIEW_VERSION:-1.13.0}"
+RAG_VERSION="${RAG_VERSION:-2.3.0}"
 # The reference *index* is data, versioned independently of the service image:
-# the 2.0.0 index works unchanged with the 2.2.0 service. It is published on the
+# the 2.0.0 index works unchanged with the 2.3.0 service. It is published on the
 # PUBLIC detector repo so it downloads with no token, unlike the private
 # reference-service repo that ships the image. Override with RAG_INDEX_VERSION /
 # RAG_INDEX_REPO / RAG_INDEX_TAG, or point ASSET_BASE_URL at a mirror.
 RAG_INDEX_VERSION="${RAG_INDEX_VERSION:-2.0.0}"
 RAG_INDEX_REPO="${RAG_INDEX_REPO:-phishing-detection-engine}"
 RAG_INDEX_TAG="${RAG_INDEX_TAG:-rag-index-${RAG_INDEX_VERSION}}"
-STACK_VERSION="${STACK_VERSION:-1.3.0}"
+STACK_VERSION="${STACK_VERSION:-1.4.0}"
 STACK_TAG="${STACK_TAG:-v${DETECTOR_VERSION}}"
 EXTENSION_VERSION="${EXTENSION_VERSION:-3.14.0}"
 
