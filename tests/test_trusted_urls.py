@@ -43,9 +43,12 @@ def fixture_detector(tmp_path, monkeypatch):
     return detector
 
 
-async def test_ordered_allowlist_obeys_threat_intelligence_and_stage_contract(fixture_detector):
+@pytest.mark.parametrize("url", [
+    "https://www.google.com/",
+    "https://www.google.com/search?client=chrome&q=%D8%AA%D8%B3%D8%AA",
+])
+async def test_ordered_allowlist_obeys_threat_intelligence_and_stage_contract(fixture_detector, url):
     detector = fixture_detector
-    url = "https://www.google.com/"
     result = await detector.detect(url, pipeline=PIPELINE)
     assert result.verdict == Verdict.LEGITIMATE
     assert result.stage == "allowlist"

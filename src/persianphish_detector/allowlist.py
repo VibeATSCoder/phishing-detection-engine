@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from urllib.parse import parse_qsl
 
 from .trusted_urls import exact_https_url
 
 
-CATALOG_VERSION = "allowlist-20261123-v5"
+CATALOG_VERSION = "allowlist-20261123-v6"
 
 
 #: Iranian services whose users are the target of the campaigns this detects.
@@ -136,6 +137,39 @@ _OFFICIAL_URLS = {
 }
 
 
+_GOOGLE_SEARCH_URLS = frozenset({
+    "https://google.com/search",
+    "https://www.google.com/search",
+})
+# Search terms, results display options, and browser tracking parameters.
+# Parameters outside this list can change the route and require a scan.
+_GOOGLE_SEARCH_PARAMS = frozenset({
+    "aqs", "biw", "bih", "client", "dpr", "ei", "fbs", "gl", "gs_lcrp", "gs_lp",
+    "hl", "ie", "num", "oe", "oq", "q", "rlz", "sa", "safe", "sca_esv", "sclient",
+    "source", "sourceid", "spell", "start", "sxsrf", "tbm", "uact", "udm", "ved",
+})
+
+
+def _is_google_search(url: str) -> bool:
+    base, separator, query = url.partition("?")
+    if not separator or exact_https_url(base) not in _GOOGLE_SEARCH_URLS:
+        return False
+    if not query.isascii() or any(ch in "#;\\" or ord(ch) <= 32 or ord(ch) == 127 for ch in query):
+        return False
+    try:
+        pairs = parse_qsl(
+            query, keep_blank_values=True, strict_parsing=True, max_num_fields=32, errors="strict",
+        )
+    except ValueError:
+        return False
+    params = dict(pairs)
+    return (
+        len(params) == len(pairs)
+        and params.keys() <= _GOOGLE_SEARCH_PARAMS
+        and bool(params.get("q", "").strip())
+    )
+
+
 def _extra_domains() -> frozenset[str]:
     """Operator-supplied exact HTTPS homepage hosts, one host per line."""
     path = os.getenv("PPD_ALLOWLIST_FILE", "").strip()
@@ -156,7 +190,7 @@ def allowlisted_domain(url: str) -> str | None:
     """Return the specific catalog entry for a known first-party URL."""
     key = exact_https_url(url)
     if key is None:
-        return None
+        return "google.com" if _is_google_search(url) else None
     if key in _OFFICIAL_URLS:
         return _OFFICIAL_URLS[key]
     host, _, path = key.removeprefix("https://").partition("/")

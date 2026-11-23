@@ -349,7 +349,8 @@ class Detector:
             return invalid
 
         intel_match = await asyncio.to_thread(self.intel.lookup, normalized)
-        trust_key = exact_https_url(url) if browser_evidence is None and not agent_references else None
+        url_only = browser_evidence is None and not agent_references
+        trust_key = exact_https_url(url) if url_only else None
         policy_hash = None
         if trust_key is not None and self.trust is not None:
             policy_hash = self._trust_policy(pipeline, run_fast, run_jev, decision_thresholds)
@@ -375,11 +376,11 @@ class Detector:
             self._persist(result)
             return result
 
-        if use_trusted_urls and self.config.trusted_urls_enabled and trust_key is not None:
-            curated = allowlisted_domain(trust_key)
+        if use_trusted_urls and self.config.trusted_urls_enabled and url_only:
+            curated = allowlisted_domain(url)
             if curated is not None:
                 return self._trust_result(request_id, normalized, started, pipeline, curated=curated)
-            if self.trust is not None and policy_hash is not None:
+            if trust_key is not None and self.trust is not None and policy_hash is not None:
                 try:
                     cached = await asyncio.to_thread(self.trust.lookup, trust_key, policy_hash)
                 except sqlite3.Error:
