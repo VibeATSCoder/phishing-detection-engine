@@ -1,6 +1,6 @@
 FROM python:3.11-slim
 
-ARG APP_VERSION=3.10.0
+ARG APP_VERSION=3.11.0
 LABEL org.opencontainers.image.title="Phishing Detection Engine" \
       org.opencontainers.image.version=$APP_VERSION \
       org.opencontainers.image.source="https://github.com/VibeATSCoder/phishing-detection-engine"
@@ -31,4 +31,4 @@ RUN mkdir -p /app/var/results && \
 
 USER detector
 EXPOSE 8088
-CMD ["uvicorn", "persianphish_detector.api:app", "--host", "0.0.0.0", "--port", "8088", "--workers", "1", "--timeout-keep-alive", "5", "--limit-concurrency", "8", "--backlog", "32"]
+CMD ["uvicorn", "persianphish_detector.api:app", "--host", "0.0.0.0", "--port", "8088", "--workers", "1", "--timeout-keep-alive", "5", "--limit-concurrency", "256", "--backlog", "512"]

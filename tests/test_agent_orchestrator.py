@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
+from unittest.mock import AsyncMock
 
 from persianphish_detector.agent import AgentClient, AgentReview, AgentServiceError
 from persianphish_detector.config import DetectorConfig
@@ -708,6 +709,48 @@ async def test_detector_preserves_only_safe_reference_failure_codes(detail, expe
             await client.retrieve_references(suspect_url="https://suspect.example/", suspect_html="<p>fixture</p>")
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_ordered_pipeline_uses_one_parallel_review_and_keeps_stage_results(tmp_path, monkeypatch):
+    agent = FakeAgent(review("legitimate", 0.03, 0.97))
+    agent.review_parallel = AsyncMock(return_value=replace(
+        agent.result, reference_lookup={"status": "completed", "latency_ms": 130.0, "references_retrieved": 1},
+    ))
+    agent.retrieve_references = AsyncMock(side_effect=AssertionError("duplicate reference lookup"))
+    detector = make_detector(tmp_path, usable_evidence(), Verdict.SUSPICIOUS, agent)
+    detector.jev = SimpleNamespace(score=AsyncMock(return_value=JevFinding(
+        ok=True, label="phishing", phishing_score=0.54, confidence=0.56,
+    )))
+    monkeypatch.setattr(orchestrator_module, "extract_features", lambda *_: {**base_features(), "tls_missing": 1})
+    events = []
+    result = await detector.detect(
+        "https://suspect.example/", pipeline=("decision", "rag", "agent"), on_progress=events.append,
+    )
+    assert result.verdict == Verdict.LEGITIMATE
+    assert result.evidence_summary["parallel_review"] is True
+    assert result.evidence_summary["pipeline"][1]["latency_ms"] == 130.0
+    assert [item["status"] for item in result.evidence_summary["pipeline"]] == ["completed"] * 3
+    assert not any(item["code"] == "missing_transport_security" for item in result.evidence)
+    assert [item["stage"] for item in events if item["status"] == "started"] == ["crawl", "decision", "rag", "agent"]
+    agent.review_parallel.assert_awaited_once()
+    agent.retrieve_references.assert_not_awaited()
+    assert not agent.calls
+
+
+@pytest.mark.asyncio
+async def test_parallel_lookup_failure_does_not_make_an_agent_result_look_unavailable(tmp_path, monkeypatch):
+    agent = FakeAgent(review("legitimate", 0.03, 0.97))
+    agent.review_parallel = AsyncMock(return_value=replace(
+        agent.result, reference_lookup={"status": "unavailable", "error_code": "reference_service_timeout"},
+    ))
+    detector = make_detector(tmp_path, usable_evidence(), Verdict.SUSPICIOUS, agent)
+    monkeypatch.setattr(orchestrator_module, "extract_features", lambda *_: base_features())
+    result = await detector.detect("https://suspect.example/", pipeline=("rag", "agent"))
+    assert result.verdict == Verdict.SUSPICIOUS
+    assert [step["status"] for step in result.evidence_summary["pipeline"]] == ["unavailable", "completed"]
+    assert result.evidence_summary["pipeline"][0]["error_code"] == "reference_service_timeout"
+    assert "rag_unavailable" in result.reason_codes
 
 
 @pytest.mark.asyncio

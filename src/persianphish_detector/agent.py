@@ -123,6 +123,7 @@ class AgentReview:
     reference_matches: list[Dict[str, Any]] = field(default_factory=list)
     timings_ms: Dict[str, float] = field(default_factory=dict)
     review_passes: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    reference_lookup: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def provider_failed(self) -> bool:
@@ -343,6 +344,8 @@ class AgentClient:
         timeout_s: float = 60.0,
         poll_interval_s: float = 0.25,
         request_timeout_s: float = 10.0,
+        reference_timeout_s: float = 35.0,
+        max_connections: int = 128,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         if self.base_url:
@@ -361,7 +364,10 @@ class AgentClient:
         self.timeout_s = max(0.05, float(timeout_s))
         self.poll_interval_s = max(0.01, float(poll_interval_s))
         self.request_timeout_s = max(0.05, min(float(request_timeout_s), self.timeout_s))
+        self.reference_timeout_s = reference_timeout_s
+        self.max_connections = max_connections
         self._client: Any = None
+        self._parallel_retry_at = 0.0
 
     def _headers(self) -> dict[str, str]:
         headers = {"accept": "application/json"}
@@ -376,12 +382,31 @@ class AgentClient:
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
                 headers=self._headers(),
-                timeout=httpx.Timeout(self.request_timeout_s, connect=min(3.0, self.request_timeout_s)),
+                timeout=self._timeout(self.request_timeout_s),
                 trust_env=False,
                 follow_redirects=False,
-                limits=httpx.Limits(max_connections=4, max_keepalive_connections=2),
+                limits=httpx.Limits(max_connections=self.max_connections, max_keepalive_connections=min(32, self.max_connections)),
             )
         return self._client
+
+    @staticmethod
+    def _timeout(seconds: float):
+        import httpx
+
+        return httpx.Timeout(seconds, connect=min(3.0, seconds), pool=min(2.0, seconds))
+
+    async def _send(self, method: str, path: str, *, reference: bool = False, **kwargs: Any):
+        import httpx
+
+        namespace = "reference" if reference else "agent"
+        try:
+            return await self._http().request(method, path, **kwargs)
+        except httpx.PoolTimeout as exc:
+            raise AgentServiceError(f"{namespace}_transport_busy") from exc
+        except httpx.TimeoutException as exc:
+            raise AgentServiceError(f"{namespace}_transport_timeout") from exc
+        except httpx.TransportError as exc:
+            raise AgentServiceError(f"{namespace}_transport_unreachable") from exc
 
     async def close(self) -> None:
         if self._client is not None:
@@ -417,8 +442,9 @@ class AgentClient:
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         if not suspect_html or len(suspect_html.encode("utf-8", errors="replace")) > MAX_SUSPECT_HTML_BYTES:
             raise AgentServiceError("agent_suspect_html_unavailable")
-        response = await self._http().post(
-            "/api/v1/references/retrieve",
+        response = await self._send(
+            "POST", "/api/v1/references/retrieve", reference=True,
+            timeout=self._timeout(self.reference_timeout_s),
             json={"suspect_url": suspect_url, "input_mode": "provided_html", "suspect_html": suspect_html},
         )
         self._check_response_size(response)
@@ -448,6 +474,7 @@ class AgentClient:
         upstream: Mapping[str, Any],
         references: Sequence[Mapping[str, Any]] = (),
         automatic_references: bool = True,
+        parallel_references: bool = False,
     ) -> AgentReview:
         if not self.base_url:
             raise AgentServiceError("agent_service_not_configured")
@@ -475,8 +502,18 @@ class AgentClient:
         }
         if not automatic_references:
             payload["automatic_references"] = False
-        accepted = await self._http().post("/api/v1/analyses", json=payload)
+        if parallel_references:
+            payload["parallel_references"] = True
+        accepted = await self._send("POST", "/api/v1/analyses", json=payload)
         self._check_response_size(accepted)
+        if parallel_references and accepted.status_code == 422:
+            details = self._json_object(accepted).get("detail")
+            if isinstance(details, list) and any(
+                isinstance(item, dict) and item.get("type") == "extra_forbidden"
+                and item.get("loc") == ["body", "parallel_references"] for item in details
+            ):
+                self._parallel_retry_at = time.monotonic() + 60
+                raise AgentServiceError("parallel_review_not_supported")
         if accepted.status_code != 202:
             raise AgentServiceError(f"agent_submit_http_{accepted.status_code}")
         accepted_payload = self._json_object(accepted)
@@ -486,10 +523,16 @@ class AgentClient:
 
         deadline = time.monotonic() + self.timeout_s
         transient_failures = 0
+        interval = self.poll_interval_s
+        max_interval = max(1.0, interval)
+        jitter = 0.85 + int(analysis_id[:4], 36) % 31 / 100
         while True:
             if time.monotonic() >= deadline:
                 raise AgentServiceError("agent_poll_timeout")
-            response = await self._http().get(f"/api/v1/analyses/{analysis_id}")
+            response = await self._send(
+                "GET", f"/api/v1/analyses/{analysis_id}",
+                timeout=self._timeout(min(self.request_timeout_s, max(0.01, deadline - time.monotonic()))),
+            )
             self._check_response_size(response)
             if response.status_code in {502, 503, 504} and transient_failures < 2:
                 transient_failures += 1
@@ -509,7 +552,13 @@ class AgentClient:
                 if not isinstance(result, dict):
                     raise AgentServiceError("agent_result_missing")
                 return self._parse_result(analysis_id, result)
-            await asyncio.sleep(min(self.poll_interval_s, max(0.0, deadline - time.monotonic())))
+            await asyncio.sleep(min(interval * jitter, max(0.0, deadline - time.monotonic())))
+            interval = min(max_interval, interval * 1.5)
+
+    async def review_parallel(self, **kwargs: Any) -> AgentReview:
+        if time.monotonic() < self._parallel_retry_at:
+            raise AgentServiceError("parallel_review_not_supported")
+        return await self.review(**kwargs, parallel_references=True)
 
     @staticmethod
     def _check_response_size(response: Any) -> None:
@@ -543,6 +592,19 @@ class AgentClient:
         model = str(result.get("model", ""))
         if len(model) > 200:
             raise AgentServiceError("agent_result_invalid_model")
+        lookup = result.get("reference_lookup")
+        reference_lookup = {}
+        if isinstance(lookup, dict) and lookup.get("status") in ("completed", "unavailable"):
+            reference_lookup = {"status": lookup["status"]}
+            error = lookup.get("error_code")
+            if isinstance(error, str) and re.fullmatch(r"reference_[a-z0-9_]{1,99}", error):
+                reference_lookup["error_code"] = error
+            elapsed = lookup.get("latency_ms")
+            if isinstance(elapsed, (int, float)) and 0 <= elapsed <= 600_000:
+                reference_lookup["latency_ms"] = elapsed
+            retrieved = lookup.get("references_retrieved")
+            if isinstance(retrieved, int) and 0 <= retrieved <= 3:
+                reference_lookup["references_retrieved"] = retrieved
         return AgentReview(
             analysis_id=analysis_id,
             verdict_candidate=verdict,
@@ -564,4 +626,5 @@ class AgentClient:
             reference_matches=_bounded_reference_matches(result.get("reference_matches", []), limit=5),
             timings_ms=_review_timings(result.get("timings_ms")),
             review_passes=_review_passes(result.get("review_passes")),
+            reference_lookup=reference_lookup,
         )

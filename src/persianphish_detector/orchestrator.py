@@ -175,6 +175,8 @@ class Detector:
             api_key=config.agent_api_key,
             timeout_s=config.agent_timeout_s,
             poll_interval_s=config.agent_poll_interval_s,
+            max_connections=config.agent_max_connections,
+            reference_timeout_s=config.reference_timeout_s,
         ) if config.agent_base_url else None
         self.jev = JevClient(
             base_url=config.jev_base_url,
@@ -346,7 +348,7 @@ class Detector:
             record_detection(invalid)
             return invalid
 
-        intel_match = self.intel.lookup(normalized)
+        intel_match = await asyncio.to_thread(self.intel.lookup, normalized)
         trust_key = exact_https_url(url) if browser_evidence is None and not agent_references else None
         policy_hash = None
         if trust_key is not None and self.trust is not None:
@@ -709,20 +711,30 @@ class Detector:
         references: list[dict[str, Any]] = []
         agent_codes: list[str] = []
         decision_blocks_clear = False
+        tls_checked = False
+        parallel_result: AgentReview | None = None
+        parallel_error: AgentServiceError | None = None
+        parallel_started: float | None = None
 
-        for stage in pipeline:
+        for index, stage in enumerate(pipeline):
             if verdict != Verdict.SUSPICIOUS:
                 steps.append({"stage": stage, "status": "skipped"})
                 continue
             step: dict[str, Any] = {"stage": stage, "status": "completed"}
             steps.append(step)
-            _progress(on_progress, stage, "started")
-            stage_started = time.perf_counter()
+            if stage != "agent" or parallel_started is None:
+                _progress(on_progress, stage, "started")
+            stage_started = parallel_started if stage == "agent" and parallel_started is not None else time.perf_counter()
+            upstream = {
+                "request_id": request_id, "rf_score": scores["rf"], "tcn_score": scores["tcn"],
+                "combined_score": scores["combined"], "reason_codes": reasons,
+            }
             try:
                 if stage == "rf":
                     if not self.config.fast_models_enabled or self.artifact is None:
                         raise AgentServiceError("fast_models_unavailable")
                     facts = await collect_domain_facts(final_url, self.config.allow_private_network)
+                    tls_checked = True
                     features = await asyncio.to_thread(extract_features, evidence, facts)
                     verdict, rf_reasons, scores = self._score_fast(features, evidence, facts, None, True)
                     summary["fast_verdict"] = verdict.value
@@ -750,26 +762,58 @@ class Detector:
                 elif stage == "rag":
                     if self.agent is None:
                         raise AgentServiceError("reference_service_unconfigured")
-                    references, matches = await self.agent.retrieve_references(
-                        suspect_url=final_url, suspect_html=evidence.html,
-                    )
-                    summary["rag"] = {"references_retrieved": len(references), "reference_matches": matches}
-                    reasons.append("rag_search_completed")
-                    reasons.append("rag_references_retrieved" if references else "rag_no_references")
+                    review_parallel = getattr(self.agent, "review_parallel", None)
+                    next_stage = pipeline[index + 1] if index + 1 < len(pipeline) else None
+                    if self.config.parallel_review and callable(review_parallel) and next_stage == "agent":
+                        parallel_started = stage_started
+                        _progress(on_progress, "agent", "started")
+                        try:
+                            parallel_result = await review_parallel(
+                                suspect_url=final_url, suspect_html=evidence.html, upstream=upstream,
+                            )
+                        except AgentServiceError as exc:
+                            if exc.code != "parallel_review_not_supported":
+                                parallel_error = exc
+                                raise
+                            parallel_started = None
+                        except Exception as exc:
+                            parallel_error = AgentServiceError(type(exc).__name__.lower())
+                            raise parallel_error from exc
+                    if parallel_result is not None:
+                        lookup = parallel_result.reference_lookup or {"status": "unavailable", "error_code": "reference_status_missing"}
+                        summary["parallel_review"] = True
+                        summary["rag"] = {**lookup, "reference_matches": parallel_result.reference_matches}
+                        step["status"] = lookup["status"]
+                        if step["status"] == "unavailable":
+                            step["error_code"] = lookup.get("error_code", "reference_service_unavailable")
+                        if isinstance(lookup.get("latency_ms"), (int, float)):
+                            step["latency_ms"] = lookup["latency_ms"]
+                        reference_count = lookup.get("references_retrieved", 0)
+                    else:
+                        references, matches = await self.agent.retrieve_references(
+                            suspect_url=final_url, suspect_html=evidence.html,
+                        )
+                        reference_count = len(references)
+                        summary["rag"] = {"references_retrieved": reference_count, "reference_matches": matches}
+                    if step["status"] == "completed":
+                        reasons.append("rag_search_completed")
+                        reasons.append("rag_references_retrieved" if reference_count else "rag_no_references")
+                    else:
+                        reasons.append("rag_unavailable")
                 elif stage == "agent":
                     if self.agent is None:
                         raise AgentServiceError("agent_service_not_configured")
                     if features is None:
                         features = await asyncio.to_thread(extract_features, evidence, DomainFacts())
-                    review = await self.agent.review(
-                        suspect_url=final_url, suspect_html=evidence.html,
-                        upstream={
-                            "request_id": request_id, "rf_score": scores["rf"], "tcn_score": scores["tcn"],
-                            "combined_score": scores["combined"], "reason_codes": reasons,
-                        },
+                    if parallel_error is not None:
+                        raise parallel_error
+                    review = parallel_result or await self.agent.review(
+                        suspect_url=final_url, suspect_html=evidence.html, upstream=upstream,
                         references=references, automatic_references=False,
                     )
                     verdict, agent_reasons = self._reconcile_agent(review, features, scores["combined"], evidence)
+                    if parallel_result is not None and summary["rag"]["status"] == "unavailable":
+                        verdict = Verdict.SUSPICIOUS
                     reasons.extend(agent_reasons)
                     step["status"] = "unavailable" if review.provider_failed else "completed"
                     summary["agent_review"] = {"status": step["status"], **review.audit_summary()}
@@ -783,9 +827,11 @@ class Detector:
                 LOGGER.warning("%s pipeline stage failed: %s", stage, code)
                 step.update(status="unavailable", error_code=code)
                 reasons.append(f"{stage}_unavailable")
+                if stage == "agent":
+                    summary["agent_review"] = {"status": "unavailable", "error_code": code}
                 if stage == "decision":
                     decision_blocks_clear = True
-            duration = (time.perf_counter() - stage_started) * 1000
+            duration = step.get("latency_ms", (time.perf_counter() - stage_started) * 1000)
             latency[stage] = duration
             step.update(verdict=verdict.value, latency_ms=round(duration, 3))
             _progress(on_progress, stage, step["status"], verdict)
@@ -795,7 +841,9 @@ class Detector:
         result = self._result(
             request_id, url, final_url, verdict, risk, decisive_stage, evidence.status, reasons,
             scores, started, summary, extra_latency=latency,
-            evidence_items=derive_evidence(features, crawl_status=evidence.status.value, agent_codes=agent_codes),
+            evidence_items=derive_evidence(
+                features, crawl_status=evidence.status.value, agent_codes=agent_codes, tls_checked=tls_checked,
+            ),
         )
         if verdict == Verdict.SUSPICIOUS:
             self._enqueue(result)

@@ -1,6 +1,25 @@
 # Minimal integrated deployment
 
-Stack 1.3.0 uses detector v3.10.0, reviewer v1.12.4, extension v3.14.0, and optional RAG v2.2.0. The component contract is recorded in [COMPATIBILITY.json](COMPATIBILITY.json).
+Stack 1.4.0 uses detector v3.11.0, reviewer v1.13.0, extension v3.14.0, and optional RAG v2.3.0. The component contract is recorded in [COMPATIBILITY.json](COMPATIBILITY.json).
+
+## Concurrent review
+
+The detector and internal services admit a burst of 100 concurrent scans. The integrated reviewer starts up to 100 review jobs, and the detector's shared reviewer transport holds 128 connections. RAG caps outbound API embeddings and CPU index searches separately, so a slow embedding does not hold the index slot. The standalone local encoder retains one lookup slot.
+
+When a pipeline selects adjacent **RAG → Agent** stages, the detector submits one job. The reviewer starts suspect-only analysis and retrieves references concurrently. The verifier receives both the analyst output and the real reference comparison. Other pipeline orders still follow the selected order. In diagnostics, overlapping stage times can add up to more than the elapsed time.
+
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `PPD_REVIEW_WORKERS` | `100` | Active integrated review jobs |
+| `PPD_AGENT_MAX_CONNECTIONS` | `128` | Detector connections to the reviewer |
+| `REVIEW_PENDING_EVIDENCE_BYTES` | `256000000` | In-memory evidence limit across active and queued reviews |
+| `RAG_EMBED_CONCURRENCY` | `32` | Concurrent requests to the configured embedding API |
+| `RAG_SEARCH_CONCURRENCY` | `2` | Concurrent API-mode index searches |
+| `RAG_QUEUE_TIMEOUT_S` | `15` | Maximum wait for a retrieval slot |
+| `PPD_REFERENCE_TIMEOUT_S` | `35` | Detector deadline for standalone reference retrieval |
+| `PPD_PARALLEL_REVIEW` | `1` | Combine adjacent RAG and Agent stages |
+
+The limits set how much traffic the stack can admit. Completion times depend on crawl latency, index CPU and memory bandwidth, and the configured providers' capacity. Overloaded stages report a bounded unavailable result.
 
 ## Trusted URLs and repeat visits
 
@@ -39,7 +58,7 @@ No checkout, no build, no `gh`. This downloads every release artefact, loads
 each image, writes one aggregated `.env`, and starts the stack:
 
 ```bash
-curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.10.0/install.sh | bash
+curl -fsSL https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.11.0/install.sh | bash
 ```
 
 It stops and tells you what to fill in the first time, because
@@ -62,7 +81,7 @@ Run these commands from the directory containing `deploy/.env`. Use
 
 ```bash
 curl -fL --progress-bar --connect-timeout 120 --max-time 86400 \
-  -o install.sh https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.10.0/install.sh
+  -o install.sh https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.11.0/install.sh
 bash install.sh --upgrade --ask-token --full
 ```
 
@@ -117,7 +136,7 @@ stack bundle from the two releases into one directory, unpack the bundle, and
 run the script:
 
 ```bash
-tar -xzf persianphish-stack-1.3.0-deploy.tar.gz     # compose files and this guide
+tar -xzf persianphish-stack-1.4.0-deploy.tar.gz     # compose files and this guide
 cp deploy/stack.env.example deploy/.env             # then set the two keys
 bash deploy/deploy.sh
 ```
@@ -372,7 +391,7 @@ being down degrades reviews to the same behaviour as not running it at all.
 
 ## Manual installation and extension testing
 
-Download [install.sh](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.10.0/install.sh)
+Download [install.sh](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.11.0/install.sh)
 into your installation directory. Run it in a terminal so it can show the
 release links and check for local files.
 
@@ -384,10 +403,10 @@ Use these release assets if you are downloading on a separate computer.
 
 | Component | Assets |
 | --- | --- |
-| Detector | [Docker image and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/v3.10.0) |
-| Stack | [Deployment bundle](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.10.0/persianphish-stack-1.3.0-deploy.tar.gz) |
-| Reviewer | [Docker image and checksum](https://github.com/VibeATSCoder/agentic-phishing-review/releases/tag/v1.12.4) |
-| RAG | [Image parts, checksums, and loader](https://github.com/VibeATSCoder/phishing-rag-service/releases/tag/v2.2.0) |
+| Detector | [Docker image and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/v3.11.0) |
+| Stack | [Deployment bundle](https://github.com/VibeATSCoder/phishing-detection-engine/releases/download/v3.11.0/persianphish-stack-1.4.0-deploy.tar.gz) |
+| Reviewer | [Docker image and checksum](https://github.com/VibeATSCoder/agentic-phishing-review/releases/tag/v1.13.0) |
+| RAG | [Image parts, checksums, and loader](https://github.com/VibeATSCoder/phishing-rag-service/releases/tag/v2.3.0) |
 | Reference index | [Index parts and checksum](https://github.com/VibeATSCoder/phishing-detection-engine/releases/tag/rag-index-2.0.0) |
 | Browser extension | [Chrome/Edge ZIP](https://github.com/VibeATSCoder/phishingshield-persian/releases/download/v3.14.0/phishingshield-persian-v3.14.0.zip) |
 
