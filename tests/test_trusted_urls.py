@@ -46,6 +46,7 @@ def fixture_detector(tmp_path, monkeypatch):
 @pytest.mark.parametrize("url", [
     "https://www.google.com/",
     "https://www.google.com/search?client=chrome&q=%D8%AA%D8%B3%D8%AA",
+    "https://www.digikala.com/search/category/?page=2",
 ])
 async def test_ordered_allowlist_obeys_threat_intelligence_and_stage_contract(fixture_detector, url):
     detector = fixture_detector

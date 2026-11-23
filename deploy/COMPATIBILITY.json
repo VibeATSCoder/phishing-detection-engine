@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "stack_version": "1.4.1",
+  "stack_version": "1.4.2",
   "components": {
     "extension": {
       "repository": "https://github.com/VibeATSCoder/phishingshield-persian",
@@ -9,13 +9,13 @@
     },
     "detector": {
       "repository": "https://github.com/VibeATSCoder/phishing-detection-engine",
-      "version": "3.11.1",
-      "tag": "v3.11.1"
+      "version": "3.11.2",
+      "tag": "v3.11.2"
     },
     "reviewer": {
       "repository": "https://github.com/VibeATSCoder/agentic-phishing-review",
-      "version": "1.13.0",
-      "tag": "v1.13.0"
+      "version": "1.13.1",
+      "tag": "v1.13.1"
     },
     "rag": {
       "repository": "https://github.com/VibeATSCoder/phishing-rag-service",
