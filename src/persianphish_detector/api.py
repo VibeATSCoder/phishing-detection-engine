@@ -96,7 +96,7 @@ class DetectRequest(BaseModel):
     use_rf: Optional[bool] = None
     pipeline: list[PipelineStage] | None = Field(default=None, min_length=1, max_length=4)
     decision_thresholds: DecisionThresholds | None = None
-    use_trusted_urls: bool = Field(default=True, description="Reuse a trusted result before crawling.")
+    use_trusted_urls: bool = Field(default=True, description="Reuse a trusted or completed result before crawling.")
 
     @model_validator(mode="after")
     def validate_total_reference_size(self) -> "DetectRequest":

@@ -168,5 +168,75 @@ async def test_ineligible_results_do_not_enter_the_trusted_cache(fixture_detecto
     if condition == "blocked":
         assert second.verdict == Verdict.CRAWL_FAILED
         detector.jev.score.assert_not_awaited()
+    elif condition in {"confidence", "risk", "query", "fragment"}:
+        assert second.stage == "scan_cache"
+        assert detector.jev.score.await_count == 1
     else:
+        assert second.stage != "scan_cache"
         assert detector.jev.score.await_count == 2
+
+
+async def test_completed_suspicious_scan_reuses_exact_policy_until_expiry(fixture_detector, monkeypatch):
+    from persianphish_detector import trusted_urls
+
+    now = [1000]
+    monkeypatch.setattr(trusted_urls, "time", SimpleNamespace(time=lambda: now[0]))
+    detector = fixture_detector
+    url = URL + "product?size=large"
+    pipeline = ("decision",)
+    thresholds = DecisionThresholds(escalation_risk=0.5, minimum_confidence=0.5, legitimate_max_risk=0.4)
+    finding = replace(detector.jev.score.return_value, phishing_score=0.2, confidence=0.42)
+    detector.jev.score.return_value = finding
+
+    first = await detector.detect(url, pipeline=pipeline, decision_thresholds=thresholds)
+    detector.trust = TrustedURLStore(detector.config.intel_db_path)
+    now[0] += 86399
+    detector.jev.score.return_value = replace(finding, phishing_score=0.1, confidence=0.75)
+    hit = await detector.detect(url, pipeline=pipeline, decision_thresholds=thresholds)
+    assert hit.verdict == first.verdict == Verdict.SUSPICIOUS
+    assert hit.risk_score == first.risk_score == 0.2
+    assert hit.request_id != first.request_id
+    assert hit.crawl_status == CrawlStatus.SKIPPED and hit.stage == "scan_cache"
+    assert hit.evidence_summary["pipeline"] == [{"stage": "decision", "status": "skipped"}]
+    assert hit.evidence_summary["scan_cache"] == {
+        "original_request_id": first.request_id, "stored_at": 1000, "expires_at": 87400,
+    }
+    assert hit.evidence_summary["jev"] == first.evidence_summary["jev"]
+    assert detector.jev.score.await_count == 1
+
+    stricter = thresholds.model_copy(update={"minimum_confidence": 0.8})
+    changed = await detector.detect(url, pipeline=pipeline, decision_thresholds=stricter)
+    assert changed.stage != "scan_cache"
+    other = await detector.detect(url.replace("large", "small"), pipeline=pipeline, decision_thresholds=thresholds)
+    assert other.stage != "scan_cache"
+    now[0] += 1
+    refreshed = await detector.detect(url, pipeline=pipeline, decision_thresholds=thresholds)
+    assert refreshed.stage == "decision" and refreshed.verdict == Verdict.LEGITIMATE
+    assert detector.jev.score.await_count == 4
+    detector.intel.add(url, verdict="phishing", source="test-feed")
+    blocked = await detector.detect(url, pipeline=pipeline, decision_thresholds=thresholds)
+    assert blocked.stage == "reputation" and blocked.verdict == Verdict.PHISHING
+
+
+async def test_failed_provider_is_not_replayed(fixture_detector):
+    detector = fixture_detector
+    detector.jev.score.return_value = JevFinding(error="provider_timeout")
+    for _ in range(2):
+        result = await detector.detect(URL, pipeline=("decision",))
+        assert result.evidence_summary["pipeline"][0]["status"] == "unavailable"
+    assert detector.jev.score.await_count == 2
+
+
+async def test_below_confidence_and_observed_signals_explain_decision(fixture_detector):
+    detector = fixture_detector
+    features = orchestrator.extract_features()
+    features.update(password_input_count=1, title_domain_token_overlap=0)
+    detector.jev.score.return_value = replace(detector.jev.score.return_value, phishing_score=0.2, confidence=0.42)
+    # The configured risk limits pass. Both independent gates still route to review.
+    thresholds = DecisionThresholds(escalation_risk=0.5, minimum_confidence=0.5, legitimate_max_risk=0.4)
+    result = await detector.detect(URL, pipeline=("decision",), decision_thresholds=thresholds)
+    assert result.verdict == Verdict.SUSPICIOUS
+    decision = result.evidence_summary["jev"]
+    assert decision["gates"] == ["jev_gate_observed_risk", "jev_gate_confidence"]
+    assert decision["observed_signals"] == ["password_title_mismatch"]
+    assert "jev_observed_password_title_mismatch" in result.reason_codes
